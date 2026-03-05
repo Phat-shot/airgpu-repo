@@ -77,6 +77,7 @@ function Load-State {
 function Clear-State {
     if (Test-Path $StateFile) { Remove-Item $StateFile -Force }
     Remove-ItemProperty -Path $RunKey -Name $RunName -Force -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName "airgpuDriverManagerResume" -Confirm:$false -ErrorAction SilentlyContinue
     Write-Log "State cleared."
 }
 
@@ -86,9 +87,25 @@ function Register-ResumeOnBoot {
     if ($null -eq $state) { $state = @{} }
     $state.Step = $NextStep
     Save-State $state
+
+    # Use Scheduled Task (AtLogon) -- Run key doesn't show a window for Admin scripts
+    $taskName = "airgpuDriverManagerResume"
+    $action   = New-ScheduledTaskAction `
+        -Execute  "powershell.exe" `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Resume"
+    $trigger   = New-ScheduledTaskTrigger -AtLogOn
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId   "$env:USERDOMAIN\$env:USERNAME" `
+        -LogonType Interactive `
+        -RunLevel Highest
+    $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 60)
+    Register-ScheduledTask -TaskName $taskName -Action $action `
+        -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    # Also keep Run key as backup
     Set-ItemProperty -Path $RunKey -Name $RunName `
-        -Value "powershell.exe -ExecutionPolicy Bypass -File `"$ScriptPath`" -Resume"
-    Write-Log "Registered resume on next boot for step: $NextStep"
+        -Value "powershell.exe -ExecutionPolicy Bypass -WindowStyle Normal -File `"$ScriptPath`" -Resume" `
+        -ErrorAction SilentlyContinue
+    Write-Log "Registered resume task for step: $NextStep"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -672,10 +689,50 @@ function Invoke-FullInstall {
     $state.S3Bucket      = $S3Bucket
     $state.S3Key         = $S3Key
 
+    # ── STEP 0: PRE-FLIGHT + DOWNLOAD ───────────────────────
+    if ($state.Step -notin @("AFTER_DOWNLOAD", "AFTER_UNINSTALL", "AFTER_REGISTRY")) {
+        Write-Host ""
+        Write-Host "  Step 1 / 4  --  Pre-flight check & Download" -ForegroundColor White
+
+        # Check AWS Tools
+        if (-not (Get-Command Get-S3Object -ErrorAction SilentlyContinue)) {
+            Write-Host ""
+            Write-Host "  ERROR: AWS Tools for PowerShell not installed." -ForegroundColor Red
+            Write-Host "  Install with: Install-Module -Name AWSPowerShell -Force -AllowClobber" -ForegroundColor Yellow
+            Write-Log "Pre-flight failed: AWS Tools not installed" -Level "ERROR"
+            return
+        }
+        Write-Host "  [OK] AWS Tools available" -ForegroundColor Green
+
+        # Check disk space (need ~1.5 GB for driver)
+        $drive = Split-Path $TempDir -Qualifier
+        $disk  = Get-PSDrive ($drive.TrimEnd(":")) -ErrorAction SilentlyContinue
+        if ($disk -and $disk.Free -lt 2GB) {
+            Write-Host "  ERROR: Not enough disk space. Need 2 GB, have $([math]::Round($disk.Free/1GB,1)) GB on $drive" -ForegroundColor Red
+            Write-Log "Pre-flight failed: insufficient disk space" -Level "ERROR"
+            return
+        }
+        Write-Host "  [OK] Disk space sufficient" -ForegroundColor Green
+
+        # Download FIRST -- before any destructive steps
+        Write-Host ""
+        Write-Host "  Downloading driver before uninstall..." -ForegroundColor Cyan
+        $installerPath = Get-DriverPackage -Variant $TargetVariant -S3Bucket $S3Bucket -S3Key $S3Key
+        if (-not $installerPath -or -not (Test-Path $installerPath)) {
+            Write-Host "  ERROR: Download failed. Aborting -- current driver untouched." -ForegroundColor Red
+            Write-Log "Pre-flight failed: download failed" -Level "ERROR"
+            return
+        }
+        Write-Host "  [OK] Driver downloaded: $installerPath" -ForegroundColor Green
+        $state.InstallerPath = $installerPath
+        $state.Step = "AFTER_DOWNLOAD"
+        Save-State $state
+    }
+
     # ── STEP 1: UNINSTALL ────────────────────────────────────
     if ($state.Step -notin @("AFTER_UNINSTALL", "AFTER_REGISTRY")) {
         Write-Host ""
-        Write-Host "  Step 1 / 3  --  Uninstall" -ForegroundColor White
+        Write-Host "  Step 2 / 4  --  Uninstall" -ForegroundColor White
         $state.Step = "UNINSTALLING"
         Save-State $state
 
@@ -685,13 +742,12 @@ function Invoke-FullInstall {
         Save-State $state
 
         Request-Reboot -Reason "Clean uninstall completed" -NextStep "AFTER_UNINSTALL"
-        # Restart-Computer -Force exits the process if user says yes
     }
 
     # ── STEP 2: REGISTRY CLEANUP ─────────────────────────────
     if ($state.Step -eq "AFTER_UNINSTALL") {
         Write-Host ""
-        Write-Host "  Step 2 / 3  --  Registry Cleanup" -ForegroundColor White
+        Write-Host "  Step 3 / 4  --  Registry Cleanup" -ForegroundColor White
 
         Write-Host "  Rescanning installed drivers..." -ForegroundColor Cyan
         $rescan = Get-InstalledNvidiaInfo
@@ -712,7 +768,7 @@ function Invoke-FullInstall {
     # ── STEP 3: INSTALL ──────────────────────────────────────
     if ($state.Step -eq "AFTER_REGISTRY") {
         Write-Host ""
-        Write-Host "  Step 3 / 3  --  Install $($state.TargetVariant) Driver  ($($state.TargetVersion))" -ForegroundColor White
+        Write-Host "  Step 4 / 4  --  Install $($state.TargetVariant) Driver  ($($state.TargetVersion))" -ForegroundColor White
 
         Write-Host "  Rescanning installed drivers..." -ForegroundColor Cyan
         $rescan = Get-InstalledNvidiaInfo
@@ -723,7 +779,12 @@ function Invoke-FullInstall {
         }
         Write-Host ""
 
-        $installerPath = Get-DriverPackage -Variant $state.TargetVariant -S3Bucket $state.S3Bucket -S3Key $state.S3Key
+        # Use already-downloaded installer (downloaded before uninstall)
+        $installerPath = $state.InstallerPath
+        if (-not $installerPath -or -not (Test-Path $installerPath)) {
+            Write-Host "  Cached installer not found -- re-downloading..." -ForegroundColor Yellow
+            $installerPath = Get-DriverPackage -Variant $state.TargetVariant -S3Bucket $state.S3Bucket -S3Key $state.S3Key
+        }
         if (-not $installerPath) {
             Write-Host "  No installer available. Aborting." -ForegroundColor Red
             Clear-State
@@ -793,7 +854,7 @@ Show-Banner
 
 # ── Resume from saved state (post-reboot or manual -Resume) ──
 $existingState = Load-State
-if ($existingState -and ($Resume -or ($existingState.Step -in @("AFTER_UNINSTALL", "AFTER_REGISTRY")))) {
+if ($existingState -and ($Resume -or ($existingState.Step -in @("AFTER_DOWNLOAD", "AFTER_UNINSTALL", "AFTER_REGISTRY")))) {
     Write-Host "  Resuming from saved step: " -NoNewline -ForegroundColor Yellow
     Write-Host $existingState.Step -ForegroundColor White
     Write-Log "Resuming from step: $($existingState.Step)"
