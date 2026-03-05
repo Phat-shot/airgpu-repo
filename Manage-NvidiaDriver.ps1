@@ -260,6 +260,7 @@ function Get-LatestGamingVersion {
         }
     } catch {
         Write-Log "Gaming S3 check failed: $_" -Level "WARN"
+        Write-Host "  [DEBUG] Gaming S3 error: $_" -ForegroundColor Red
     }
     return @{ Version = "Unknown"; S3Key = ""; S3Bucket = "" }
 }
@@ -281,6 +282,7 @@ function Get-LatestGridVersion {
         }
     } catch {
         Write-Log "GRID S3 check failed: $_" -Level "WARN"
+        Write-Host "  [DEBUG] GRID S3 error: $_" -ForegroundColor Red
     }
     return @{ Version = "Unknown"; S3Key = ""; S3Bucket = "" }
 }
