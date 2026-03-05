@@ -276,6 +276,17 @@ function Get-S3DriverInfo {
 function Get-LatestGamingVersion {
     return Get-S3DriverInfo -Bucket "nvidia-gaming" -Prefix "windows/latest/" }
 
+function Test-GamingDriverSupported {
+    param([string]$GpuName)
+    # Gaming driver supported on: T4, A10G, L4 (exact), L40S
+    # NOT supported on fractal-gpu variants like L4f, L4s, etc.
+    if ($GpuName -match '(?i)\bT4\b')    { return $true }
+    if ($GpuName -match '(?i)\bA10G\b')  { return $true }
+    if ($GpuName -match '(?i)\bL40S\b')  { return $true }
+    if ($GpuName -match '(?i)\bL4\b' -and $GpuName -notmatch '(?i)\bL4[a-zA-Z]+\b') { return $true }
+    return $false
+}
+
 function Get-LatestGridVersion {
     return Get-S3DriverInfo -Bucket "ec2-windows-nvidia-drivers" -Prefix "latest/" }
 
@@ -395,7 +406,7 @@ function Get-DriverPackage {
     Write-Status "  s3://$S3Bucket/$S3Key" "DarkGray"
     Set-AwsCredentials
     try {
-        Copy-S3Object -BucketName $S3Bucket -Key $S3Key -LocalFile $dest -ErrorAction Stop
+        Copy-S3Object -BucketName $S3Bucket -Key $S3Key -LocalFile $dest -ErrorAction Stop | Out-Null
         $sizeMB = [math]::Round((Get-Item $dest).Length / 1MB, 0)
         Write-Status "Download complete  ($sizeMB MB)" "Green"
         Write-Log "Downloaded: $(Split-Path $dest -Leaf) ($sizeMB MB)" -Level "OK"
@@ -542,7 +553,13 @@ function Step-ActionMenu {
     $opts = @()
     if ($online.UpdateAvailable)    { $opts += "Update driver  ($($info.Variant) -> latest)" }
     if ($info.Variant -eq "Gaming") { $opts += "Switch to GRID / Enterprise driver" }
-    if ($info.Variant -eq "GRID")   { $opts += "Switch to Gaming / GeForce driver" }
+    if ($info.Variant -eq "GRID") {
+        if (Test-GamingDriverSupported -GpuName $info.GpuName) {
+            $opts += "Switch to Gaming / GeForce driver"
+        } else {
+            $opts += "Switch to Gaming / GeForce driver  [not available for $($info.GpuName)]"
+        }
+    }
     if (-not $online.UpdateAvailable) { $opts += "Reinstall current driver  ($($info.Version))" }
     $opts += "Set Virtual Display as primary display"
     $opts += "Show status only  (no changes)"
@@ -602,7 +619,7 @@ function Invoke-FullInstall {
             return
         }
         Write-Status "[OK] Driver ready: $(Split-Path $installer -Leaf)" "Green"
-        $state.InstallerPath = $installer
+        $state.InstallerPath = [string]$installer
         $state.Step = "AFTER_DOWNLOAD"
         Save-State $state
     }
@@ -621,7 +638,7 @@ function Invoke-FullInstall {
     if ($state.Step -eq "AFTER_UNINSTALL_AND_CLEANUP") {
         Write-Host ""; Write-Host "  Step 3 / 3  --  Install $($state.TargetVariant) Driver ($($state.TargetVersion))" -ForegroundColor White
 
-        $installer = $state.InstallerPath
+        $installer = [string]$state.InstallerPath
         if (-not $installer -or -not (Test-Path $installer)) {
             Write-Status "Cached installer missing -- re-downloading..." "Yellow"
             Write-Log "Installer missing from cache, re-downloading" -Level "WARN"
@@ -747,9 +764,14 @@ switch -Wildcard ($action) {
         Invoke-FullInstall -TargetVariant "GRID" -Version $s3.Version -S3Bucket $s3.S3Bucket -S3Key $s3.S3Key
     }
     "*Gaming*" {
-        $s3 = $online.LatestGaming
-        Save-State @{ Step="FRESH"; TargetVariant="Gaming"; TargetVersion=$s3.Version; S3Bucket=$s3.S3Bucket; S3Key=$s3.S3Key }
-        Invoke-FullInstall -TargetVariant "Gaming" -Version $s3.Version -S3Bucket $s3.S3Bucket -S3Key $s3.S3Key
+        if ($action -like "*not available*") {
+            Write-Status "Gaming driver is not supported on $($info.GpuName)." "Red"
+            Write-Status "Supported GPUs: T4, A10G, L4, L40S (standard instances only)." "Yellow"
+        } else {
+            $s3 = $online.LatestGaming
+            Save-State @{ Step="FRESH"; TargetVariant="Gaming"; TargetVersion=$s3.Version; S3Bucket=$s3.S3Bucket; S3Key=$s3.S3Key }
+            Invoke-FullInstall -TargetVariant "Gaming" -Version $s3.Version -S3Bucket $s3.S3Bucket -S3Key $s3.S3Key
+        }
     }
     "*Reinstall*" {
         $s3 = if ($info.Variant -eq "GRID") { Get-LatestGridVersion } else { Get-LatestGamingVersion }
