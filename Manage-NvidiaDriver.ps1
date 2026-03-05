@@ -20,9 +20,9 @@
 
 param([switch]$Resume)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  CONFIGURATION
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 $WorkDir      = "C:\Program Files\airgpu\Driver Manager"
 $DownloadDir  = "$WorkDir\Downloads"
 $StateFile    = "$WorkDir\state.json"
@@ -33,9 +33,9 @@ $ScriptPath   = $MyInvocation.MyCommand.Path
 $ExePath      = "C:\Program Files\airgpu\airgpu-driver-manager.exe"
 $AwsCredsFile = "$env:USERPROFILE\.aws\credentials"
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  LOGGING  (moderate -- key events only, no per-registry-key spam)
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"
@@ -53,11 +53,11 @@ function Write-Status {
     Write-Host "  $Message" -ForegroundColor $Color
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  AWS CREDENTIALS
 #  Uses SharedCredentialsFile explicitly to avoid conflict with
 #  empty NetSDKCredentialsFile profile of the same name.
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Set-AwsCredentials {
     if (Get-Command Set-AWSCredential -ErrorAction SilentlyContinue) {
         try {
@@ -69,9 +69,9 @@ function Set-AwsCredentials {
     }
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  STATE MANAGEMENT
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Save-State {
     param([hashtable]$State)
     if (-not (Test-Path $WorkDir)) { New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null }
@@ -129,9 +129,9 @@ function Register-ResumeOnBoot {
     Write-Log "Resume registered for step: $NextStep" -Level "INFO"
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  UI HELPERS
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Show-Banner {
     Clear-Host
     Write-Host ""
@@ -176,11 +176,11 @@ function Prompt-Menu {
     return $num
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  STATE DIALOG
 #  Shown on startup when a saved state exists.
 #  Options: Resume | Start over | Clean up & exit
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Show-StateDialog {
     param([hashtable]$State)
     $stepLabel = switch ($State.Step) {
@@ -189,8 +189,8 @@ function Show-StateDialog {
         "AFTER_REGISTRY"  { "Waiting to install  (registry cleaned, reboot completed)" }
         default           { $State.Step }
     }
-    $targetLine = ("  │  Target  : " + $State.TargetVariant + " " + $State.TargetVersion).PadRight(52) + "│"
-    $stepLine   = ("  │  Step    : " + $stepLabel).PadRight(52) + "│"
+    $targetLine = ("  |  Target  : " + $State.TargetVariant + " " + $State.TargetVersion).PadRight(52) + "|"
+    $stepLine   = ("  |  Step    : " + $stepLabel).PadRight(52) + "|"
     Write-Host ""
     Write-Host "  +---------------------------------------------------+" -ForegroundColor Yellow
     Write-Host "  |  Saved state found                              |" -ForegroundColor Yellow
@@ -213,9 +213,9 @@ function Show-StateDialog {
     }
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  GPU DETECTION
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Get-InstalledNvidiaInfo {
     $info = @{ Installed=$false; Version=""; Variant="Unknown"; GpuName=""; DriverDate="" }
 
@@ -256,11 +256,11 @@ function Get-InstalledNvidiaInfo {
     return $info
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  S3 VERSION CHECK
 #  Gaming : s3://nvidia-gaming/windows/latest/
 #  GRID   : s3://ec2-windows-nvidia-drivers/latest/
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Get-S3DriverInfo {
     param([string]$Bucket, [string]$Prefix)
     Set-AwsCredentials
@@ -280,9 +280,9 @@ function Get-LatestGamingVersion {
 function Get-LatestGridVersion {
     return Get-S3DriverInfo -Bucket "ec2-windows-nvidia-drivers" -Prefix "latest/" }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  UNINSTALL
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Invoke-NvidiaUninstall {
     Show-Section "Uninstalling NVIDIA Drivers"
     Write-Log "Uninstall started" -Level "INFO"
@@ -343,9 +343,9 @@ function Invoke-NvidiaUninstall {
     Write-Log "Uninstall complete" -Level "OK"
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  REGISTRY CLEANUP
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Invoke-RegistryCleanup {
     Show-Section "Registry Cleanup"
     $keys = @(
@@ -371,9 +371,9 @@ function Invoke-RegistryCleanup {
     Write-Log "Registry cleanup complete ($removed keys removed)" -Level "OK"
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  DOWNLOAD
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Get-DriverPackage {
     param([string]$Variant, [string]$S3Bucket, [string]$S3Key)
     if (-not (Test-Path $DownloadDir)) { New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null }
@@ -407,9 +407,9 @@ function Get-DriverPackage {
     }
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  INSTALL
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Install-NvidiaDriver {
     param([string]$InstallerPath, [string]$Variant)
     Show-Section "Installing NVIDIA Driver"
@@ -454,9 +454,9 @@ function Set-GamingLicense {
     }
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  VIRTUAL DISPLAY
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Set-NvidiaVirtualDisplayAsPrimary {
     Show-Section "Setting NVIDIA Virtual Display as Primary"
     $vd = Get-WmiObject Win32_PnPEntity |
@@ -474,9 +474,9 @@ function Set-NvidiaVirtualDisplayAsPrimary {
     Write-Status "Settings -> System -> Display -> select display -> 'Make this my main display'" "DarkYellow"
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  REBOOT
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Request-Reboot {
     param([string]$Reason, [string]$NextStep)
     Register-ResumeOnBoot -NextStep $NextStep
@@ -494,9 +494,9 @@ function Request-Reboot {
     }
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  STATUS + ONLINE CHECK
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Step-ShowStatus {
     Show-Section "Current GPU Status"
     $info = Get-InstalledNvidiaInfo
@@ -552,12 +552,12 @@ function Step-ActionMenu {
     return $opts[$sel - 1]
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  FULL INSTALL FLOW
 #
 #  Steps: FRESH -> AFTER_DOWNLOAD -> AFTER_UNINSTALL_AND_CLEANUP -> done
 #  Only ONE reboot required (after uninstall + registry cleanup combined).
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 function Invoke-FullInstall {
     param([string]$TargetVariant, [string]$Version, [string]$S3Bucket = "", [string]$S3Key = "")
 
@@ -568,7 +568,7 @@ function Invoke-FullInstall {
     $state.S3Bucket      = $S3Bucket
     $state.S3Key         = $S3Key
 
-    # ── STEP 1: PRE-FLIGHT + DOWNLOAD ────────────────────────
+    # -- STEP 1: PRE-FLIGHT + DOWNLOAD ------------------------
     if ($state.Step -notin @("AFTER_DOWNLOAD","AFTER_UNINSTALL_AND_CLEANUP")) {
         Write-Host ""; Write-Host "  Step 1 / 3  --  Pre-flight & Download" -ForegroundColor White
 
@@ -608,7 +608,7 @@ function Invoke-FullInstall {
         Save-State $state
     }
 
-    # ── STEP 2: UNINSTALL + REGISTRY CLEANUP (combined, 1 reboot) ──
+    # -- STEP 2: UNINSTALL + REGISTRY CLEANUP (combined, 1 reboot) --
     if ($state.Step -eq "AFTER_DOWNLOAD") {
         Write-Host ""; Write-Host "  Step 2 / 3  --  Uninstall & Registry Cleanup" -ForegroundColor White
         $state.Step = "UNINSTALLING"; Save-State $state
@@ -618,7 +618,7 @@ function Invoke-FullInstall {
         Request-Reboot -Reason "Uninstall + registry cleanup completed" -NextStep "AFTER_UNINSTALL_AND_CLEANUP"
     }
 
-    # ── STEP 3: INSTALL ───────────────────────────────────────
+    # -- STEP 3: INSTALL ---------------------------------------
     if ($state.Step -eq "AFTER_UNINSTALL_AND_CLEANUP") {
         Write-Host ""; Write-Host "  Step 3 / 3  --  Install $($state.TargetVariant) Driver ($($state.TargetVersion))" -ForegroundColor White
 
@@ -659,16 +659,16 @@ function Invoke-FullInstall {
     }
 }
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 #  ENTRY POINT
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 foreach ($dir in @($WorkDir,$DownloadDir)) {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 }
 
 Show-Banner
 
-# ── Loading Prerequisites (spinner via runspace) ─────────────
+# -- Loading Prerequisites (spinner via runspace) -------------
 $stopFlag = [System.Collections.Generic.List[bool]]::new()
 $stopFlag.Add($false)
 $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
@@ -693,16 +693,11 @@ $ps.EndInvoke($handle) | Out-Null
 $ps.Dispose(); $rs.Close()
 Write-Host "`r  Loading Prerequisites... done.  " -ForegroundColor Green
 
-# ── Check for saved state ─────────────────────────────────────
+# -- Check for saved state -------------------------------------
 $existingState = Load-State
-$resumeAction  = $null
 
 if ($existingState -and $existingState.Step -in @("AFTER_DOWNLOAD","AFTER_UNINSTALL_AND_CLEANUP","UNINSTALLING")) {
-    if ($Resume) {
-        $resumeAction = "resume"
-    } else {
-        $resumeAction = Show-StateDialog -State $existingState
-    }
+    $resumeAction = "resume"
 }
 
 if ($resumeAction -eq "resume") {
@@ -725,7 +720,7 @@ if ($resumeAction -eq "resume") {
     exit 0
 }
 
-# ── Fresh run ─────────────────────────────────────────────────
+# -- Fresh run -------------------------------------------------
 $info = Step-ShowStatus
 
 if (-not $info.Installed) {
