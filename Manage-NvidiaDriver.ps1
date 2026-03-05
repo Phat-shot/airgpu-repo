@@ -192,11 +192,11 @@ function Show-StateDialog {
     $targetLine = ("  │  Target  : " + $State.TargetVariant + " " + $State.TargetVersion).PadRight(52) + "│"
     $stepLine   = ("  │  Step    : " + $stepLabel).PadRight(52) + "│"
     Write-Host ""
-    Write-Host "  ┌─────────────────────────────────────────────────┐" -ForegroundColor Yellow
-    Write-Host "  │  Saved state found                              │" -ForegroundColor Yellow
+    Write-Host "  +---------------------------------------------------+" -ForegroundColor Yellow
+    Write-Host "  |  Saved state found                              |" -ForegroundColor Yellow
     Write-Host $targetLine -ForegroundColor Yellow
     Write-Host $stepLine   -ForegroundColor Yellow
-    Write-Host "  └─────────────────────────────────────────────────┘" -ForegroundColor Yellow
+    Write-Host "  +---------------------------------------------------+" -ForegroundColor Yellow
     Write-Host ""
 
     $sel = Prompt-Menu "What would you like to do?" @(
