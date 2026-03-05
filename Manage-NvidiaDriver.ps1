@@ -55,6 +55,7 @@ function Set-AwsCredentials {
         } catch {
             Write-Log "AWS profile 'default' not found at $AwsCredsFile -- trying IAM role/env vars" -Level "WARN"
         }
+        Set-DefaultAWSRegion -Region "us-east-1" -ErrorAction SilentlyContinue
     }
 }
 
@@ -207,7 +208,8 @@ function Get-S3DriverInfo {
     param([string]$Bucket, [string]$Prefix)
     Set-AwsCredentials
     try {
-        $exe = Get-S3Object -BucketName $Bucket -KeyPrefix $Prefix -Region "us-east-1" -ErrorAction Stop |
+        Set-DefaultAWSRegion -Region "us-east-1" -ErrorAction SilentlyContinue
+        $exe = Get-S3Object -BucketName $Bucket -KeyPrefix $Prefix -ErrorAction Stop |
             Where-Object { $_.Key -like "*.exe" } | Select-Object -First 1
         if ($exe -and (Split-Path $exe.Key -Leaf) -match '(\d+\.\d+)') {
             return @{ Version=$Matches[1]; S3Key=$exe.Key; S3Bucket=$Bucket }
@@ -332,7 +334,8 @@ function Get-DriverPackage {
     Write-Host "  -> $dest" -ForegroundColor Cyan
     Set-AwsCredentials
     try {
-        Copy-S3Object -BucketName $S3Bucket -Key $S3Key -LocalFile $dest -Region "us-east-1" -ErrorAction Stop
+        Set-DefaultAWSRegion -Region "us-east-1" -ErrorAction SilentlyContinue
+        Copy-S3Object -BucketName $S3Bucket -Key $S3Key -LocalFile $dest -ErrorAction Stop
         Write-Log "Download complete: $dest" -Level "OK"
         return $dest
     } catch {
