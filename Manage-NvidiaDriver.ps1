@@ -90,36 +90,24 @@ function Register-ResumeOnBoot {
 # ─────────────────────────────────────────────────────────────
 function Show-Banner {
     Clear-Host
-    # airgpu logo: rocket icon (left) + wordmark (right)
-    # The rocket body mirrors the shield/rocket shape from the actual airgpu logo
     Write-Host ""
-    Write-Host "      *    .         .    *       .    *   .    .  *  " -ForegroundColor DarkGray
-    Write-Host "   .     *    .  *       .    .       .       *      " -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "        /\        " -NoNewline -ForegroundColor Cyan
+    Write-Host "    ___________  " -NoNewline -ForegroundColor White
     Write-Host "        _                   " -ForegroundColor White
-    Write-Host "       /  \       " -NoNewline -ForegroundColor Cyan
+    Write-Host "   |           | " -NoNewline -ForegroundColor White
     Write-Host "   __ (_) _ __  __ _  _ __  _   _  " -ForegroundColor White
-    Write-Host "      ||        " -NoNewline -ForegroundColor Cyan
-    Write-Host "  / _` || || '__|/ _` || '_ \| | | | " -ForegroundColor White
-    Write-Host "   |    |       " -NoNewline -ForegroundColor Cyan
+    Write-Host "   |  _______  | " -NoNewline -ForegroundColor White
+    Write-Host "  / _` || || '__`|/ _` || '_ \| | | | " -ForegroundColor White
+    Write-Host "   | |       | | " -NoNewline -ForegroundColor White
     Write-Host " | (_| || || |  | (_| || |_) | |_| | " -ForegroundColor White
-    Write-Host "   | () |       " -NoNewline -ForegroundColor Cyan
+    Write-Host "   | |_______| | " -NoNewline -ForegroundColor White
     Write-Host "  \__,_||_||_|   \__, || .__/ \__,_| " -ForegroundColor White
-    Write-Host "   |    |        " -NoNewline -ForegroundColor Cyan
-    Write-Host "                 |___/ |_|            " -ForegroundColor White
-    Write-Host "  /|    |\      " -ForegroundColor Cyan
-    Write-Host " / |    | \     " -NoNewline -ForegroundColor Cyan
-    Write-Host "   D R I V E R   M A N A G E R       " -ForegroundColor DarkCyan
-    Write-Host "   \  /\  /     " -NoNewline -ForegroundColor Cyan
-    Write-Host "   NVIDIA  *  Amazon EC2  *  Windows 11" -ForegroundColor DarkGray
-    Write-Host "    \/  \/      " -ForegroundColor Cyan
-    Write-Host "    |    |      " -ForegroundColor DarkCyan
-    Write-Host "   /      \     " -ForegroundColor DarkCyan
-    Write-Host "  / ' '' ' \    " -ForegroundColor DarkCyan
+    Write-Host "   |___________| " -NoNewline -ForegroundColor White
+    Write-Host "                  |___/ |_|           " -ForegroundColor White
+    Write-Host ""
+    Write-Host "                    D R I V E R   M A N A G E R" -ForegroundColor DarkCyan
+    Write-Host "                    NVIDIA  *  Amazon EC2  *  Windows 11" -ForegroundColor DarkGray
     Write-Host ""
 }
-
 function Show-Section {
     param([string]$Title)
     Write-Host ""
@@ -233,57 +221,48 @@ function Get-InstalledNvidiaInfo {
 # ─────────────────────────────────────────────────────────────
 function Get-LatestGamingVersion {
     param([string]$GpuName)
-    try {
-        $psID = 120
-        if ($GpuName -match "A10G") { $psID = 933 }
-        if ($GpuName -match "M60")  { $psID = 864 }
-        $resp = Invoke-WebRequest `
-            -Uri "https://www.nvidia.com/Download/processDriver.aspx?psid=$psID&pfid=783&osid=135&lid=1&whql=1&lang=en-us&ctk=0&qnf=0" `
-            -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
-        if ($resp.Content -match '(\d{3}\.\d{2})') { return @{ Version = $Matches[1]; Url = "" } }
-    } catch {
-        Write-Log "Gaming driver online check failed: $_" -Level "WARN"
+    # Data Center GPUs don't have Gaming/GeForce drivers
+    if ($GpuName -match "L4|L40|A100|H100|T4|V100|A40") {
+        return @{ Version = "N/A (Data Center GPU)"; S3Key = ""; S3Bucket = "" }
     }
-    return @{ Version = "Unknown"; Url = "" }
+    # Official AWS method: s3://nvidia-gaming/windows/latest/
+    # Requires AmazonS3ReadOnlyAccess + nvidia-gaming bucket access (G4dn/G5 only)
+    try {
+        if (-not (Get-Command Get-S3Object -ErrorAction SilentlyContinue)) { throw "No AWS Tools" }
+        $objects = Get-S3Object -BucketName "nvidia-gaming" -KeyPrefix "windows/latest" -Region "us-east-1" -ErrorAction Stop
+        $exe = $objects | Where-Object { $_.Key -like "*.exe" } | Select-Object -First 1
+        if ($exe) {
+            $fname = Split-Path $exe.Key -Leaf
+            if ($fname -match '(\d+\.\d+)') {
+                return @{ Version = $Matches[1]; S3Key = $exe.Key; S3Bucket = "nvidia-gaming" }
+            }
+        }
+    } catch {
+        Write-Log "Gaming S3 check failed: $_" -Level "WARN"
+    }
+    return @{ Version = "Unknown"; S3Key = ""; S3Bucket = "" }
 }
 
 function Get-LatestGridVersion {
     param([string]$GpuName)
+    # Official AWS method: query S3 bucket via AWS SDK
+    # Bucket: ec2-windows-nvidia-drivers, prefix: latest/
+    # Requires AmazonS3ReadOnlyAccess IAM policy on the instance
     try {
-        $resp    = Invoke-WebRequest -Uri "https://griddownloads.nvidia.com/flex/NVIDIAGridLatestDriverVersion" `
-            -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
-        $json    = $resp.Content | ConvertFrom-Json -ErrorAction Stop
-        $version = if ($json.latestDriverVersion) { $json.latestDriverVersion } elseif ($json.version) { $json.version } else { "" }
-        if ($version) { return @{ Version = $version; Url = "" } }
-    } catch { }
-    try {
-        $s3Base = "https://ec2-windows-nvidia-drivers.s3.amazonaws.com"
-        $resp   = Invoke-WebRequest -Uri $s3Base -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
-        if ($resp.Content -match '(\d+\.\d+).*?\.exe') {
-            return @{ Version = $Matches[1]; Url = "$s3Base/$($Matches[0])" }
+        $objects = Get-S3Object -BucketName "ec2-windows-nvidia-drivers" -KeyPrefix "latest" -Region "us-east-1" -ErrorAction Stop
+        $exe = $objects | Where-Object { $_.Key -like "*.exe" } | Select-Object -First 1
+        if ($exe) {
+            $fname = Split-Path $exe.Key -Leaf
+            if ($fname -match '(\d+\.\d+)') {
+                return @{ Version = $Matches[1]; S3Key = $exe.Key; S3Bucket = "ec2-windows-nvidia-drivers" }
+            }
         }
     } catch {
-        Write-Log "GRID driver online check failed: $_" -Level "WARN"
+        Write-Log "GRID S3 check failed: $_" -Level "WARN"
     }
-    return @{ Version = "Unknown"; Url = "" }
+    return @{ Version = "Unknown"; S3Key = ""; S3Bucket = "" }
 }
 
-function Get-DownloadUrl {
-    param([string]$Variant, [string]$Version, [string]$GpuName)
-    if ($Variant -eq "GRID") {
-        $base = "https://ec2-windows-nvidia-drivers.s3.amazonaws.com"
-        try {
-            $list  = Invoke-WebRequest -Uri $base -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
-            $found = [regex]::Matches($list.Content, '(?<=<Key>)[^<]*' + [regex]::Escape($Version) + '[^<]*\.exe(?=</Key>)')
-            if ($found.Count -gt 0) { return "$base/$($found[0].Value)" }
-            $allExe = [regex]::Matches($list.Content, '(?<=<Key>)[^<]*\.exe(?=</Key>)')
-            if ($allExe.Count -gt 0) { return "$base/$($allExe[$allExe.Count-1].Value)" }
-        } catch { }
-        return ""
-    } else {
-        return "https://international.download.nvidia.com/Windows/$Version/$Version-desktop-win10-win11-64bit-international-dch-whql.exe"
-    }
-}
 
 # ─────────────────────────────────────────────────────────────
 #  UNINSTALL
@@ -386,32 +365,53 @@ function Invoke-RegistryCleanup {
 #  DOWNLOAD
 # ─────────────────────────────────────────────────────────────
 function Get-DriverPackage {
-    param([string]$Url, [string]$Variant)
+    param([string]$Variant, [string]$S3Bucket = "", [string]$S3Key = "", [string]$Url = "")
 
+    if (-not (Test-Path $TempDir)) { New-Item -ItemType Directory -Path $TempDir -Force | Out-Null }
+
+    # ── GRID: download from official AWS S3 bucket ────────────
+    if ($Variant -eq "GRID" -and $S3Bucket -and $S3Key) {
+        $dest = "$TempDir\$(Split-Path $S3Key -Leaf)"
+        if (Test-Path $dest) {
+            Write-Host "  Installer already cached: $dest" -ForegroundColor Green
+            return $dest
+        }
+        Write-Host "  Downloading from S3: s3://$S3Bucket/$S3Key" -ForegroundColor Cyan
+        Write-Host "  Destination        : $dest" -ForegroundColor Cyan
+        Write-Host ""
+        try {
+            # Check AWS Tools are available
+            if (-not (Get-Command Get-S3Object -ErrorAction SilentlyContinue)) {
+                throw "AWS Tools for PowerShell not installed. Run: Install-Module -Name AWSPowerShell -Force"
+            }
+            Copy-S3Object -BucketName $S3Bucket -Key $S3Key -LocalFile $dest -Region "us-east-1" -ErrorAction Stop
+            Write-Log "S3 download complete: $dest" -Level "OK"
+            return $dest
+        } catch {
+            Write-Host "  S3 download failed: $_" -ForegroundColor Red
+            Write-Host "  Make sure the instance has AmazonS3ReadOnlyAccess IAM policy." -ForegroundColor Yellow
+            Write-Log "S3 download failed: $_" -Level "ERROR"
+            return ""
+        }
+    }
+
+    # ── Fallback: HTTP download ───────────────────────────────
     if (-not $Url) {
         Write-Host ""
-        Write-Host "  No download URL could be determined automatically." -ForegroundColor Red
-        Write-Host "  Please download the driver manually:" -ForegroundColor Yellow
-        if ($Variant -eq "GRID") {
-            Write-Host "  -> https://ec2-windows-nvidia-drivers.s3.amazonaws.com"
-            Write-Host "  -> https://docs.aws.amazon.com/AWSEC2/latest/WindowsGuide/install-nvidia-driver.html"
-        } else {
-            Write-Host "  -> https://www.nvidia.com/Download/index.aspx"
-        }
+        Write-Host "  No download source available." -ForegroundColor Red
+        Write-Host "  For GRID: attach AmazonS3ReadOnlyAccess IAM policy to this instance." -ForegroundColor Yellow
+        Write-Host "  Manual: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/install-nvidia-driver.html" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "  Enter installer path (leave empty to cancel): " -ForegroundColor Yellow -NoNewline
         return (Read-Host).Trim('"').Trim()
     }
 
-    if (-not (Test-Path $TempDir)) { New-Item -ItemType Directory -Path $TempDir -Force | Out-Null }
     $dest = "$TempDir\$(Split-Path $Url -Leaf)"
-
     if (Test-Path $dest) {
         Write-Host "  Installer already cached: $dest" -ForegroundColor Green
         return $dest
     }
 
-    Write-Host ""
     Write-Host "  Downloading : $Url" -ForegroundColor Cyan
     Write-Host "  Destination : $dest" -ForegroundColor Cyan
     Write-Host ""
@@ -631,13 +631,14 @@ function Step-ActionMenu {
 #  FULL INSTALL FLOW  (reboot-safe state machine)
 # ─────────────────────────────────────────────────────────────
 function Invoke-FullInstall {
-    param([string]$TargetVariant, [string]$Version, [string]$Url)
+    param([string]$TargetVariant, [string]$Version, [string]$S3Bucket = "", [string]$S3Key = "")
 
     $state = Load-State
     if ($null -eq $state) { $state = @{} }
     $state.TargetVariant = $TargetVariant
     $state.TargetVersion = $Version
-    $state.TargetUrl     = $Url
+    $state.S3Bucket      = $S3Bucket
+    $state.S3Key         = $S3Key
 
     # ── STEP 1: UNINSTALL ────────────────────────────────────
     if ($state.Step -notin @("AFTER_UNINSTALL", "AFTER_REGISTRY")) {
@@ -690,7 +691,7 @@ function Invoke-FullInstall {
         }
         Write-Host ""
 
-        $installerPath = Get-DriverPackage -Url $state.TargetUrl -Variant $state.TargetVariant
+        $installerPath = Get-DriverPackage -Variant $state.TargetVariant -S3Bucket $state.S3Bucket -S3Key $state.S3Key
         if (-not $installerPath) {
             Write-Host "  No installer available. Aborting." -ForegroundColor Red
             Clear-State
@@ -700,6 +701,30 @@ function Invoke-FullInstall {
         $ok = Install-NvidiaDriver -InstallerPath $installerPath -Variant $state.TargetVariant
 
         if ($ok) {
+            # Gaming driver: requires registry key + cert after install (per AWS docs)
+            if ($state.TargetVariant -eq "Gaming") {
+                Write-Host "  Configuring Gaming driver license..." -ForegroundColor Cyan
+                try {
+                    $regPath = "HKLM:\SOFTWARE\NVIDIA Corporation\Global"
+                    if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+                    New-ItemProperty -Path $regPath -Name "vGamingMarketplace" -PropertyType DWord -Value 2 -Force | Out-Null
+                    Write-Host "  Registry key set: vGamingMarketplace=2" -ForegroundColor Green
+                    Write-Log "Gaming registry key set" -Level "OK"
+                } catch {
+                    Write-Log "Gaming registry key failed: $_" -Level "WARN"
+                }
+                try {
+                    $certUrl  = "https://nvidia-gaming.s3.amazonaws.com/GridSwCert-Archive/GridSwCertWindows_2024_02_22.cert"
+                    $certDest = "$env:PUBLIC\Documents\GridSwCert.txt"
+                    Invoke-WebRequest -Uri $certUrl -OutFile $certDest -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+                    Write-Host "  Gaming cert downloaded: $certDest" -ForegroundColor Green
+                    Write-Log "Gaming cert downloaded" -Level "OK"
+                } catch {
+                    Write-Log "Gaming cert download failed: $_" -Level "WARN"
+                    Write-Host "  Warning: Could not download gaming cert. Licensing may not work." -ForegroundColor Yellow
+                }
+            }
+
             $state.Step = "AFTER_INSTALL"
             Save-State $state
 
@@ -752,7 +777,8 @@ if ($existingState -and ($Resume -or ($existingState.Step -in @("AFTER_UNINSTALL
     Invoke-FullInstall `
         -TargetVariant $existingState.TargetVariant `
         -Version       $existingState.TargetVersion `
-        -Url           $existingState.TargetUrl
+        -S3Bucket      $existingState.S3Bucket `
+        -S3Key         $existingState.S3Key
     exit 0
 }
 
@@ -763,9 +789,8 @@ if (-not $info.Installed) {
     Write-Host "  No NVIDIA driver installed." -ForegroundColor Yellow
     $variant    = if (Prompt-YesNo "Install GRID / Enterprise driver? (No = Gaming)") { "GRID" } else { "Gaming" }
     $latestInfo = if ($variant -eq "GRID") { Get-LatestGridVersion -GpuName "" } else { Get-LatestGamingVersion -GpuName "" }
-    $url        = Get-DownloadUrl -Variant $variant -Version $latestInfo.Version -GpuName ""
-    Save-State @{ Step="AFTER_REGISTRY"; TargetVariant=$variant; TargetVersion=$latestInfo.Version; TargetUrl=$url }
-    Invoke-FullInstall -TargetVariant $variant -Version $latestInfo.Version -Url $url
+    Save-State @{ Step="AFTER_REGISTRY"; TargetVariant=$variant; TargetVersion=$latestInfo.Version; S3Bucket=$latestInfo.S3Bucket; S3Key=$latestInfo.S3Key }
+    Invoke-FullInstall -TargetVariant $variant -Version $latestInfo.Version -S3Bucket $latestInfo.S3Bucket -S3Key $latestInfo.S3Key
     exit 0
 }
 
@@ -775,27 +800,28 @@ if ($null -eq $action) { exit 0 }
 
 switch -Wildcard ($action) {
     "*Update driver*" {
-        $v   = if ($info.Variant -eq "GRID") { $online.LatestGrid.Version } else { $online.LatestGaming.Version }
-        $url = Get-DownloadUrl -Variant $info.Variant -Version $v -GpuName $info.GpuName
-        Save-State @{ Step="AFTER_REGISTRY"; TargetVariant=$info.Variant; TargetVersion=$v; TargetUrl=$url }
-        Invoke-FullInstall -TargetVariant $info.Variant -Version $v -Url $url
+        $latest = if ($info.Variant -eq "GRID") { $online.LatestGrid } else { $online.LatestGaming }
+        $v      = $latest.Version
+        Save-State @{ Step="AFTER_REGISTRY"; TargetVariant=$info.Variant; TargetVersion=$v; S3Bucket=$latest.S3Bucket; S3Key=$latest.S3Key }
+        Invoke-FullInstall -TargetVariant $info.Variant -Version $v -S3Bucket $latest.S3Bucket -S3Key $latest.S3Key
     }
     "*GRID*" {
-        $v   = $online.LatestGrid.Version
-        $url = Get-DownloadUrl -Variant "GRID" -Version $v -GpuName $info.GpuName
-        Save-State @{ Step="AFTER_REGISTRY"; TargetVariant="GRID"; TargetVersion=$v; TargetUrl=$url }
-        Invoke-FullInstall -TargetVariant "GRID" -Version $v -Url $url
+        $latest = $online.LatestGrid
+        $v      = $latest.Version
+        Save-State @{ Step="AFTER_REGISTRY"; TargetVariant="GRID"; TargetVersion=$v; S3Bucket=$latest.S3Bucket; S3Key=$latest.S3Key }
+        Invoke-FullInstall -TargetVariant "GRID" -Version $v -S3Bucket $latest.S3Bucket -S3Key $latest.S3Key
     }
     "*Gaming*" {
-        $v   = $online.LatestGaming.Version
-        $url = Get-DownloadUrl -Variant "Gaming" -Version $v -GpuName $info.GpuName
-        Save-State @{ Step="AFTER_REGISTRY"; TargetVariant="Gaming"; TargetVersion=$v; TargetUrl=$url }
-        Invoke-FullInstall -TargetVariant "Gaming" -Version $v -Url $url
+        $latest = $online.LatestGaming
+        $v      = $latest.Version
+        Save-State @{ Step="AFTER_REGISTRY"; TargetVariant="Gaming"; TargetVersion=$v; S3Bucket=$latest.S3Bucket; S3Key=$latest.S3Key }
+        Invoke-FullInstall -TargetVariant "Gaming" -Version $v -S3Bucket $latest.S3Bucket -S3Key $latest.S3Key
     }
     "*Reinstall*" {
-        $url = Get-DownloadUrl -Variant $info.Variant -Version $info.Version -GpuName $info.GpuName
-        Save-State @{ Step="AFTER_REGISTRY"; TargetVariant=$info.Variant; TargetVersion=$info.Version; TargetUrl=$url }
-        Invoke-FullInstall -TargetVariant $info.Variant -Version $info.Version -Url $url
+        # Reinstall: re-fetch S3 key for current variant
+        $latestInfo = if ($info.Variant -eq "GRID") { Get-LatestGridVersion -GpuName $info.GpuName } else { Get-LatestGamingVersion -GpuName $info.GpuName }
+        Save-State @{ Step="AFTER_REGISTRY"; TargetVariant=$info.Variant; TargetVersion=$info.Version; S3Bucket=$latestInfo.S3Bucket; S3Key=$latestInfo.S3Key }
+        Invoke-FullInstall -TargetVariant $info.Variant -Version $info.Version -S3Bucket $latestInfo.S3Bucket -S3Key $latestInfo.S3Key
     }
     "*Virtual Display*" {
         Set-NvidiaVirtualDisplayAsPrimary
