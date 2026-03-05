@@ -881,17 +881,17 @@ foreach ($dir in @($WorkDir, $TempDir)) {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 }
 
-Show-Banner
-
 # ── AWS Credentials -- load profile globally for all S3 operations ──
+# Must happen before Show-Banner and any S3 calls (including online version check)
 if (Get-Command Set-AWSCredential -ErrorAction SilentlyContinue) {
     try {
         Set-AWSCredential -ProfileName default -ErrorAction Stop
-        Write-Log "AWS credentials loaded (profile: default)" -Level "OK"
     } catch {
-        Write-Log "AWS profile 'default' not found -- using IAM role or env vars" -Level "WARN"
+        # No profile -- will use IAM role or env vars silently
     }
 }
+
+Show-Banner
 
 # ── Resume from saved state (post-reboot or manual -Resume) ──
 $existingState = Load-State
