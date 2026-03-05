@@ -62,7 +62,13 @@ function Save-State {
 
 function Load-State {
     if (Test-Path $StateFile) {
-        try { return (Get-Content $StateFile -Raw -Encoding UTF8) | ConvertFrom-Json -AsHashtable }
+        try {
+            $json = (Get-Content $StateFile -Raw -Encoding UTF8) | ConvertFrom-Json
+            # Convert PSCustomObject to hashtable (PS5.1 compatible -- no -AsHashtable)
+            $ht = @{}
+            $json.PSObject.Properties | ForEach-Object { $ht[$_.Name] = $_.Value }
+            return $ht
+        }
         catch { Write-Log "Could not load state file: $_" -Level "WARN" }
     }
     return $null
@@ -291,6 +297,34 @@ function Invoke-NvidiaUninstall {
                 Write-Log "Uninstalled: $($app.DisplayName)" -Level "OK"
             } catch {
                 Write-Log "Failed to uninstall '$($app.DisplayName)': $_" -Level "WARN"
+            }
+        }
+    }
+
+    # NVIDIA GRID/Display drivers use setup.exe -- no UninstallString in registry
+    Write-Host "  Running NVIDIA display driver uninstaller..." -ForegroundColor Yellow
+    $nvSetup = Get-ChildItem "$env:ProgramFiles\NVIDIA Corporation\Installer2\InstallerCore" -Filter "NVI2.EXE" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $nvSetup) {
+        $nvSetup = Get-ChildItem "$env:SystemRoot\System32\DriverStore\FileRepository" -Recurse -Filter "setup.exe" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*nv*" } | Select-Object -First 1
+    }
+    if ($nvSetup) {
+        Write-Host "  Found: $($nvSetup.FullName)" -ForegroundColor DarkGray
+        try {
+            Start-Process $nvSetup.FullName -ArgumentList "-s -noreboot -clean" -Wait -NoNewWindow
+            Write-Log "NVIDIA setup.exe uninstall complete" -Level "OK"
+        } catch {
+            Write-Log "NVIDIA setup.exe uninstall failed: $_" -Level "WARN"
+        }
+    } else {
+        # Fallback: pnputil to remove display INF
+        Write-Host "  Using pnputil to remove display driver INF..." -ForegroundColor DarkGray
+        $driverList = pnputil /enum-drivers 2>&1
+        $oemInfs = [regex]::Matches($driverList, 'oem\d+\.inf') | Select-Object -ExpandProperty Value -Unique
+        foreach ($inf in $oemInfs) {
+            if ($driverList -match "$inf[\s\S]{0,200}nv[a-z]") {
+                pnputil /delete-driver $inf /uninstall /force 2>&1 | Out-Null
+                Write-Log "Removed INF: $inf" -Level "OK"
             }
         }
     }
