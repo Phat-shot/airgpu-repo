@@ -67,6 +67,13 @@ Write-Host ""
 Write-Host "  Launching Driver Manager..." -ForegroundColor Cyan
 Write-Host ""
 
-# Pass through any arguments (e.g. -Resume)
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-& $ScriptDst @args
+# When running as a compiled EXE (ps2exe), & script.ps1 is blocked by ExecutionPolicy.
+# Detect this and spawn a real powershell.exe process instead.
+$isExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName -notlike "*powershell*"
+if ($isExe) {
+    $argStr = ($args | ForEach-Object { $_ }) -join " "
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptDst`" $argStr" -Wait
+} else {
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+    & $ScriptDst @args
+}
