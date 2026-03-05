@@ -8,7 +8,7 @@
     - Checks latest versions from official AWS S3 buckets
     - Supports variant switching: Gaming <-> GRID
     - Downloads driver BEFORE uninstall (safe -- aborts if download fails)
-    - Full clean uninstall + registry cleanup + reboot-safe state machine
+    - Clean uninstall + registry cleanup, single reboot, then install
     - Sets NVIDIA Virtual Display as primary after install
 
 .NOTES
@@ -24,9 +24,9 @@ param([switch]$Resume)
 #  CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 $WorkDir      = "C:\Program Files\airgpu\Driver Manager"
+$DownloadDir  = "$WorkDir\Downloads"
 $StateFile    = "$WorkDir\state.json"
 $LogFile      = "$WorkDir\driver_manager.log"
-$TempDir      = "C:\Program Files\airgpu\Driver Manager\Downloads"
 $RunKey       = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 $RunName      = "airgpuDriverManagerResume"
 $ScriptPath   = $MyInvocation.MyCommand.Path
@@ -34,19 +34,28 @@ $ExePath      = "C:\Program Files\airgpu\airgpu-driver-manager.exe"
 $AwsCredsFile = "$env:USERPROFILE\.aws\credentials"
 
 # ─────────────────────────────────────────────────────────────
-#  LOGGING
+#  LOGGING  (moderate -- key events only, no per-registry-key spam)
 # ─────────────────────────────────────────────────────────────
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] [$Level] $Message"
     Add-Content -Path $LogFile -Value $line -ErrorAction SilentlyContinue
-    $color = switch ($Level) { "ERROR" { "Red" } "WARN" { "Yellow" } "OK" { "Green" } default { "Cyan" } }
-    Write-Host $line -ForegroundColor $color
+    # Only print to console for WARN/ERROR (INFO goes to log file only)
+    switch ($Level) {
+        "ERROR" { Write-Host "  [ERROR] $Message" -ForegroundColor Red }
+        "WARN"  { Write-Host "  [WARN]  $Message" -ForegroundColor Yellow }
+        "OK"    { Write-Host "  [OK]    $Message" -ForegroundColor Green }
+    }
+}
+
+function Write-Status {
+    param([string]$Message, [string]$Color = "White")
+    Write-Host "  $Message" -ForegroundColor $Color
 }
 
 # ─────────────────────────────────────────────────────────────
 #  AWS CREDENTIALS
-#  Explicitly uses SharedCredentialsFile to avoid conflict with
+#  Uses SharedCredentialsFile explicitly to avoid conflict with
 #  empty NetSDKCredentialsFile profile of the same name.
 # ─────────────────────────────────────────────────────────────
 function Set-AwsCredentials {
@@ -67,7 +76,7 @@ function Save-State {
     param([hashtable]$State)
     if (-not (Test-Path $WorkDir)) { New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null }
     $State | ConvertTo-Json -Depth 5 | Set-Content -Path $StateFile -Encoding UTF8
-    Write-Log "State saved: $($State.Step)"
+    Write-Log "State: $($State.Step)" -Level "INFO"
 }
 
 function Load-State {
@@ -86,7 +95,14 @@ function Clear-State {
     if (Test-Path $StateFile) { Remove-Item $StateFile -Force }
     Remove-ItemProperty -Path $RunKey -Name $RunName -Force -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName "airgpuDriverManagerResume" -Confirm:$false -ErrorAction SilentlyContinue
-    Write-Log "State cleared."
+    Write-Log "State and resume task cleared." -Level "INFO"
+}
+
+function Clear-Downloads {
+    if (Test-Path $DownloadDir) {
+        Remove-Item "$DownloadDir\*" -Force -ErrorAction SilentlyContinue
+        Write-Log "Downloads cleared." -Level "INFO"
+    }
 }
 
 function Register-ResumeOnBoot {
@@ -95,8 +111,10 @@ function Register-ResumeOnBoot {
     if ($null -eq $state) { $state = @{} }
     $state.Step = $NextStep
     Save-State $state
+
     $launchTarget = if (Test-Path $ExePath) { $ExePath } else { "powershell.exe" }
-    $launchArgs   = if (Test-Path $ExePath) { "-Resume" } else { "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Resume" }
+    $launchArgs   = if (Test-Path $ExePath) { "-Resume" } `
+                    else { "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Resume" }
     $action    = New-ScheduledTaskAction -Execute $launchTarget -Argument $launchArgs
     $trigger   = New-ScheduledTaskTrigger -AtLogOn
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
@@ -104,10 +122,11 @@ function Register-ResumeOnBoot {
     $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 60)
     Register-ScheduledTask -TaskName "airgpuDriverManagerResume" -Action $action `
         -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-    Set-ItemProperty -Path $RunKey -Name $RunName `
-        -Value "$(if (Test-Path $ExePath) { $ExePath } else { "powershell.exe -ExecutionPolicy Bypass -WindowStyle Normal -File `"$ScriptPath`"" }) -Resume" `
-        -ErrorAction SilentlyContinue
-    Write-Log "Registered resume task for step: $NextStep"
+    # Run key as backup
+    $runVal = if (Test-Path $ExePath) { "`"$ExePath`" -Resume" } `
+              else { "powershell.exe -ExecutionPolicy Bypass -WindowStyle Normal -File `"$ScriptPath`" -Resume" }
+    Set-ItemProperty -Path $RunKey -Name $RunName -Value $runVal -ErrorAction SilentlyContinue
+    Write-Log "Resume registered for step: $NextStep" -Level "INFO"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -134,7 +153,8 @@ function Show-Banner {
     Write-Host ""
 }
 
-function Show-Section { param([string]$T); Write-Host ""; Write-Host "  -- $T " -ForegroundColor DarkGray; Write-Host "" }
+function Show-Section { param([string]$T)
+    Write-Host ""; Write-Host "  -- $T " -ForegroundColor DarkGray; Write-Host "" }
 
 function Prompt-YesNo {
     param([string]$Q)
@@ -157,6 +177,41 @@ function Prompt-Menu {
 }
 
 # ─────────────────────────────────────────────────────────────
+#  STATE DIALOG
+#  Shown on startup when a saved state exists.
+#  Options: Resume | Start over | Clean up & exit
+# ─────────────────────────────────────────────────────────────
+function Show-StateDialog {
+    param([hashtable]$State)
+    $stepLabel = switch ($State.Step) {
+        "AFTER_DOWNLOAD"  { "Waiting to uninstall  (driver already downloaded)" }
+        "AFTER_UNINSTALL" { "Waiting to install  (uninstall done, reboot completed)" }
+        "AFTER_REGISTRY"  { "Waiting to install  (registry cleaned, reboot completed)" }
+        default           { $State.Step }
+    }
+    Write-Host ""
+    Write-Host "  ┌─────────────────────────────────────────────────┐" -ForegroundColor Yellow
+    Write-Host "  │  Saved state found                              │" -ForegroundColor Yellow
+    Write-Host "  │  Target  : $($State.TargetVariant) $($State.TargetVersion)".PadRight(52) + "│" -ForegroundColor Yellow
+    Write-Host "  │  Step    : $stepLabel".PadRight(52) + "│" -ForegroundColor Yellow
+    Write-Host "  └─────────────────────────────────────────────────┘" -ForegroundColor Yellow
+    Write-Host ""
+
+    $sel = Prompt-Menu "What would you like to do?" @(
+        "Resume from saved step  ($($State.Step))",
+        "Start over  (clear state, keep downloaded files)",
+        "Clean up everything  (clear state + downloads) and exit"
+    )
+
+    switch ($sel) {
+        1 { return "resume" }
+        2 { Clear-State; return "fresh" }
+        3 { Clear-State; Clear-Downloads; Write-Status "Cleaned up. Exiting." "Green"; exit 0 }
+        0 { Write-Status "Cancelled." "DarkGray"; exit 0 }
+    }
+}
+
+# ─────────────────────────────────────────────────────────────
 #  GPU DETECTION
 # ─────────────────────────────────────────────────────────────
 function Get-InstalledNvidiaInfo {
@@ -165,14 +220,13 @@ function Get-InstalledNvidiaInfo {
     $gpu = Get-WmiObject Win32_VideoController |
         Where-Object { $_.Name -like "*NVIDIA*" -or $_.AdapterCompatibility -like "*NVIDIA*" } |
         Select-Object -First 1
-    if (-not $gpu) { Write-Log "No NVIDIA GPU found via WMI." -Level "WARN"; return $info }
+    if (-not $gpu) { return $info }
 
     $info.GpuName    = $gpu.Name
     $info.DriverDate = $gpu.DriverDate
     $info.Version    = if ($gpu.DriverVersion -match '(\d{3})(\d{2})$') { "$($Matches[1]).$($Matches[2])" }
                        else { $gpu.DriverVersion }
 
-    # Prefer nvidia-smi for accuracy
     $smi = if (Test-Path "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe") {
                "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe" } else { "nvidia-smi" }
     try {
@@ -202,7 +256,6 @@ function Get-InstalledNvidiaInfo {
 
 # ─────────────────────────────────────────────────────────────
 #  S3 VERSION CHECK
-#  Both Gaming and GRID drivers come from official AWS S3 buckets.
 #  Gaming : s3://nvidia-gaming/windows/latest/
 #  GRID   : s3://ec2-windows-nvidia-drivers/latest/
 # ─────────────────────────────────────────────────────────────
@@ -210,20 +263,19 @@ function Get-S3DriverInfo {
     param([string]$Bucket, [string]$Prefix)
     Set-AwsCredentials
     try {
-        Set-DefaultAWSRegion -Region "us-east-1" -ErrorAction SilentlyContinue
         $exe = Get-S3Object -BucketName $Bucket -KeyPrefix $Prefix -ErrorAction Stop |
             Where-Object { $_.Key -like "*.exe" } | Select-Object -First 1
         if ($exe -and (Split-Path $exe.Key -Leaf) -match '(\d+\.\d+)') {
             return @{ Version=$Matches[1]; S3Key=$exe.Key; S3Bucket=$Bucket }
         }
-    } catch { Write-Log "S3 check failed ($Bucket/$Prefix): $_" -Level "WARN" }
+    } catch { Write-Log "S3 lookup failed ($Bucket): $_" -Level "WARN" }
     return @{ Version="Unknown"; S3Key=""; S3Bucket="" }
 }
 
-function Get-LatestGamingVersion { param([string]$GpuName = "")
+function Get-LatestGamingVersion {
     return Get-S3DriverInfo -Bucket "nvidia-gaming" -Prefix "windows/latest/" }
 
-function Get-LatestGridVersion { param([string]$GpuName = "")
+function Get-LatestGridVersion {
     return Get-S3DriverInfo -Bucket "ec2-windows-nvidia-drivers" -Prefix "latest/" }
 
 # ─────────────────────────────────────────────────────────────
@@ -231,28 +283,28 @@ function Get-LatestGridVersion { param([string]$GpuName = "")
 # ─────────────────────────────────────────────────────────────
 function Invoke-NvidiaUninstall {
     Show-Section "Uninstalling NVIDIA Drivers"
-    Write-Log "Starting NVIDIA uninstall..."
+    Write-Log "Uninstall started" -Level "INFO"
 
-    # Registered uninstall entries (apps/components)
-    Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    # Registered entries
+    $apps = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" `
         -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName -like "*NVIDIA*" -and $_.UninstallString } |
-        ForEach-Object {
-            Write-Host "  Uninstalling: $($_.DisplayName)" -ForegroundColor Yellow
-            try {
-                if ($_.UninstallString -match "MsiExec") {
-                    $guid = [regex]::Match($_.UninstallString, '\{[^}]+\}').Value
-                    if ($guid) { Start-Process msiexec.exe -ArgumentList "/x $guid /quiet /norestart" -Wait -NoNewWindow }
-                } elseif ($_.UninstallString -match "\.exe") {
-                    $exe = [regex]::Match($_.UninstallString, '"?([^"]+\.exe)"?').Groups[1].Value
-                    if (Test-Path $exe) { Start-Process $exe -ArgumentList "-s -noreboot" -Wait -NoNewWindow }
-                }
-                Write-Log "Uninstalled: $($_.DisplayName)" -Level "OK"
-            } catch { Write-Log "Failed to uninstall '$($_.DisplayName)': $_" -Level "WARN" }
-        }
+        Where-Object { $_.DisplayName -like "*NVIDIA*" -and $_.UninstallString }
 
-    # Display driver via NVI2.EXE / setup.exe (no UninstallString in registry)
+    foreach ($app in $apps) {
+        Write-Status "Uninstalling: $($app.DisplayName)" "Yellow"
+        try {
+            if ($app.UninstallString -match "MsiExec") {
+                $guid = [regex]::Match($app.UninstallString, '\{[^}]+\}').Value
+                if ($guid) { Start-Process msiexec.exe -ArgumentList "/x $guid /quiet /norestart" -Wait -NoNewWindow }
+            } elseif ($app.UninstallString -match "\.exe") {
+                $exe = [regex]::Match($app.UninstallString, '"?([^"]+\.exe)"?').Groups[1].Value
+                if (Test-Path $exe) { Start-Process $exe -ArgumentList "-s -noreboot" -Wait -NoNewWindow }
+            }
+        } catch { Write-Log "Failed to uninstall '$($app.DisplayName)': $_" -Level "WARN" }
+    }
+
+    # NVI2.EXE / setup.exe for display driver
     $setup = Get-ChildItem "$env:ProgramFiles\NVIDIA Corporation\Installer2\InstallerCore" `
                  -Filter "NVI2.EXE" -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $setup) {
@@ -261,22 +313,19 @@ function Invoke-NvidiaUninstall {
                      Where-Object { $_.FullName -like "*nv*" } | Select-Object -First 1
     }
     if ($setup) {
-        Write-Host "  Running: $($setup.FullName) -s -noreboot -clean" -ForegroundColor Yellow
-        try { Start-Process $setup.FullName -ArgumentList "-s -noreboot -clean" -Wait -NoNewWindow
-              Write-Log "Display driver uninstall complete" -Level "OK"
-        } catch { Write-Log "Display driver uninstall failed: $_" -Level "WARN" }
+        Write-Status "Running display driver uninstaller..." "Yellow"
+        try { Start-Process $setup.FullName -ArgumentList "-s -noreboot -clean" -Wait -NoNewWindow }
+        catch { Write-Log "Display driver uninstall failed: $_" -Level "WARN" }
     } else {
-        # Fallback: pnputil
         $list = pnputil /enum-drivers 2>&1
         [regex]::Matches($list, 'oem\d+\.inf') | Select-Object -ExpandProperty Value -Unique | ForEach-Object {
             if ($list -match "$_[\s\S]{0,200}nv[a-z]") {
                 pnputil /delete-driver $_ /uninstall /force 2>&1 | Out-Null
-                Write-Log "Removed INF: $_" -Level "OK"
             }
         }
     }
 
-    Write-Host "  Stopping NVIDIA services..." -ForegroundColor Yellow
+    Write-Status "Stopping NVIDIA services..." "Yellow"
     Get-Service | Where-Object { $_.Name -like "nv*" -or $_.DisplayName -like "*NVIDIA*" } | ForEach-Object {
         Stop-Service $_.Name -Force -ErrorAction SilentlyContinue
         sc.exe delete $_.Name 2>&1 | Out-Null
@@ -288,8 +337,8 @@ function Invoke-NvidiaUninstall {
     Get-Item "$env:SystemRoot\System32\DriverStore\FileRepository\nv*" -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-    Write-Host "  Uninstall complete." -ForegroundColor Green
-    Write-Log "Uninstall complete."
+    Write-Status "Uninstall complete." "Green"
+    Write-Log "Uninstall complete" -Level "OK"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -297,24 +346,27 @@ function Invoke-NvidiaUninstall {
 # ─────────────────────────────────────────────────────────────
 function Invoke-RegistryCleanup {
     Show-Section "Registry Cleanup"
-    @("HKLM:\SOFTWARE\NVIDIA Corporation","HKLM:\SOFTWARE\WOW6432Node\NVIDIA Corporation",
-      "HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm","HKLM:\SYSTEM\CurrentControlSet\Services\nvpciflt",
-      "HKLM:\SYSTEM\CurrentControlSet\Services\nvstor","HKLM:\SYSTEM\CurrentControlSet\Services\NvStreamKms",
-      "HKLM:\SYSTEM\CurrentControlSet\Services\NVSvc","HKLM:\SYSTEM\CurrentControlSet\Services\nvvhci",
-      "HKLM:\SYSTEM\CurrentControlSet\Services\nvvad_WaveExtensible",
-      "HKLM:\SYSTEM\CurrentControlSet\Services\NvTelemetryContainer",
-      "HKCU:\SOFTWARE\NVIDIA Corporation") | ForEach-Object {
-        if (Test-Path $_) { Remove-Item $_ -Recurse -Force -ErrorAction SilentlyContinue
-                            Write-Log "Removed: $_" -Level "OK" }
+    $keys = @(
+        "HKLM:\SOFTWARE\NVIDIA Corporation","HKLM:\SOFTWARE\WOW6432Node\NVIDIA Corporation",
+        "HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm","HKLM:\SYSTEM\CurrentControlSet\Services\nvpciflt",
+        "HKLM:\SYSTEM\CurrentControlSet\Services\nvstor","HKLM:\SYSTEM\CurrentControlSet\Services\NvStreamKms",
+        "HKLM:\SYSTEM\CurrentControlSet\Services\NVSvc","HKLM:\SYSTEM\CurrentControlSet\Services\nvvhci",
+        "HKLM:\SYSTEM\CurrentControlSet\Services\nvvad_WaveExtensible",
+        "HKLM:\SYSTEM\CurrentControlSet\Services\NvTelemetryContainer",
+        "HKCU:\SOFTWARE\NVIDIA Corporation"
+    )
+    $removed = 0
+    $keys | ForEach-Object {
+        if (Test-Path $_) { Remove-Item $_ -Recurse -Force -ErrorAction SilentlyContinue; $removed++ }
     }
     @("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
       "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall") | ForEach-Object {
         Get-ChildItem $_ -ErrorAction SilentlyContinue |
             Where-Object { (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DisplayName -like "*NVIDIA*" } |
-            ForEach-Object { Remove-Item $_.PSPath -Recurse -Force -ErrorAction SilentlyContinue }
+            ForEach-Object { Remove-Item $_.PSPath -Recurse -Force -ErrorAction SilentlyContinue; $removed++ }
     }
-    Write-Host "  Registry cleanup complete." -ForegroundColor Green
-    Write-Log "Registry cleanup complete."
+    Write-Status "Registry cleanup complete  ($removed keys removed)." "Green"
+    Write-Log "Registry cleanup complete ($removed keys removed)" -Level "OK"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -322,26 +374,32 @@ function Invoke-RegistryCleanup {
 # ─────────────────────────────────────────────────────────────
 function Get-DriverPackage {
     param([string]$Variant, [string]$S3Bucket, [string]$S3Key)
-    if (-not (Test-Path $TempDir)) { New-Item -ItemType Directory -Path $TempDir -Force | Out-Null }
+    if (-not (Test-Path $DownloadDir)) { New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null }
 
     if (-not $S3Bucket -or -not $S3Key) {
-        Write-Host "  No S3 source. Enter installer path manually (empty = cancel):" -ForegroundColor Yellow
-        return (Read-Host "  Path").Trim('"').Trim()
+        Write-Status "No S3 source available. Enter installer path manually (empty = cancel):" "Yellow"
+        $manual = (Read-Host "  Path").Trim('"').Trim()
+        if ($manual -and (Test-Path $manual)) { return $manual }
+        Write-Log "No installer source available" -Level "ERROR"
+        return ""
     }
 
-    $dest = "$TempDir\$(Split-Path $S3Key -Leaf)"
-    if (Test-Path $dest) { Write-Host "  Cached: $dest" -ForegroundColor Green; return $dest }
+    $dest = "$DownloadDir\$(Split-Path $S3Key -Leaf)"
+    if (Test-Path $dest) {
+        Write-Status "Using cached installer: $(Split-Path $dest -Leaf)" "Green"
+        return $dest
+    }
 
-    Write-Host "  Downloading s3://$S3Bucket/$S3Key" -ForegroundColor Cyan
-    Write-Host "  -> $dest" -ForegroundColor Cyan
+    Write-Status "Downloading from S3..." "Cyan"
+    Write-Status "  s3://$S3Bucket/$S3Key" "DarkGray"
     Set-AwsCredentials
     try {
-        Set-DefaultAWSRegion -Region "us-east-1" -ErrorAction SilentlyContinue
         Copy-S3Object -BucketName $S3Bucket -Key $S3Key -LocalFile $dest -ErrorAction Stop
-        Write-Log "Download complete: $dest" -Level "OK"
+        $sizeMB = [math]::Round((Get-Item $dest).Length / 1MB, 0)
+        Write-Status "Download complete  ($sizeMB MB)" "Green"
+        Write-Log "Downloaded: $(Split-Path $dest -Leaf) ($sizeMB MB)" -Level "OK"
         return $dest
     } catch {
-        Write-Host "  S3 download failed: $_" -ForegroundColor Red
         Write-Log "S3 download failed: $_" -Level "ERROR"
         return ""
     }
@@ -354,40 +412,43 @@ function Install-NvidiaDriver {
     param([string]$InstallerPath, [string]$Variant)
     Show-Section "Installing NVIDIA Driver"
     if (-not $InstallerPath -or -not (Test-Path $InstallerPath)) {
-        Write-Log "Installer not found: $InstallerPath" -Level "ERROR"; return $false
+        Write-Log "Installer not found: $InstallerPath" -Level "ERROR"
+        return $false
     }
-    Write-Host "  Installer : $InstallerPath" -ForegroundColor Cyan
-    Write-Host "  Variant   : $Variant" -ForegroundColor Cyan
-    Write-Host "  Running silent install (this may take several minutes)..." -ForegroundColor Yellow
+    Write-Status "Installer : $(Split-Path $InstallerPath -Leaf)" "Cyan"
+    Write-Status "Variant   : $Variant" "Cyan"
+    Write-Status "Running silent install  (this may take several minutes)..." "Yellow"
     $argList = @("-s","-noreboot","-clean")
     if ($Variant -eq "GRID") { $argList += "-noeula" }
     try {
         $proc = Start-Process -FilePath $InstallerPath -ArgumentList $argList -Wait -PassThru -NoNewWindow
         if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 14) {
-            Write-Host "  Installation complete!" -ForegroundColor Green
-            Write-Log "Driver installed (ExitCode: $($proc.ExitCode))" -Level "OK"
+            Write-Status "Installation complete!" "Green"
+            Write-Log "Driver installed successfully (ExitCode: $($proc.ExitCode))" -Level "OK"
             return $true
         }
-        Write-Log "Driver install ExitCode: $($proc.ExitCode)" -Level "WARN"
+        Write-Log "Driver installer exited with code $($proc.ExitCode)" -Level "WARN"
         return $true
-    } catch { Write-Log "Installation error: $_" -Level "ERROR"; return $false }
+    } catch {
+        Write-Log "Installation error: $_" -Level "ERROR"
+        return $false
+    }
 }
 
 function Set-GamingLicense {
-    # Registry key + cert required post-install for Gaming drivers (per AWS docs)
+    Write-Status "Configuring Gaming driver license..." "Cyan"
     try {
         $p = "HKLM:\SOFTWARE\NVIDIA Corporation\Global"
         if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null }
         New-ItemProperty -Path $p -Name "vGamingMarketplace" -PropertyType DWord -Value 2 -Force | Out-Null
-        Write-Log "Gaming: vGamingMarketplace=2 set" -Level "OK"
+        Write-Log "Gaming license: vGamingMarketplace=2 set" -Level "OK"
     } catch { Write-Log "Gaming registry key failed: $_" -Level "WARN" }
     try {
         Invoke-WebRequest -Uri "https://nvidia-gaming.s3.amazonaws.com/GridSwCert-Archive/GridSwCertWindows_2024_02_22.cert" `
             -OutFile "$env:PUBLIC\Documents\GridSwCert.txt" -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
         Write-Log "Gaming cert downloaded" -Level "OK"
     } catch {
-        Write-Log "Gaming cert download failed: $_" -Level "WARN"
-        Write-Host "  Warning: Could not download gaming cert -- licensing may not work." -ForegroundColor Yellow
+        Write-Log "Gaming cert download failed (licensing may not work): $_" -Level "WARN"
     }
 }
 
@@ -398,17 +459,17 @@ function Set-NvidiaVirtualDisplayAsPrimary {
     Show-Section "Setting NVIDIA Virtual Display as Primary"
     $vd = Get-WmiObject Win32_PnPEntity |
         Where-Object { $_.Name -like "*NVIDIA Virtual*" -or $_.Name -like "*Virtual Display*" }
-    if ($vd) { $vd | ForEach-Object { Write-Host "  Found: $($_.Name)" -ForegroundColor Green } }
-    else      { Write-Host "  No NVIDIA Virtual Display found." -ForegroundColor Yellow }
+    if ($vd) { $vd | ForEach-Object { Write-Status "Found: $($_.Name)" "Green" } }
+    else      { Write-Status "No NVIDIA Virtual Display found." "Yellow" }
     try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-        Write-Host "  Displays:" -ForegroundColor Cyan
+        Write-Status "Active displays:" "Cyan"
         [System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
-            Write-Host "    $($_.DeviceName)  $($_.Bounds.Width)x$($_.Bounds.Height)$(if($_.Primary){' [PRIMARY]'})"
+            Write-Status "  $($_.DeviceName)  $($_.Bounds.Width)x$($_.Bounds.Height)$(if($_.Primary){' [PRIMARY]'})" "DarkGray"
         }
     } catch { }
     Start-Process "ms-settings:display" -ErrorAction SilentlyContinue
-    Write-Host "  Settings -> System -> Display -> select display -> 'Make this my main display'" -ForegroundColor DarkYellow
+    Write-Status "Settings -> System -> Display -> select display -> 'Make this my main display'" "DarkYellow"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -418,15 +479,16 @@ function Request-Reboot {
     param([string]$Reason, [string]$NextStep)
     Register-ResumeOnBoot -NextStep $NextStep
     Write-Host ""
-    Write-Host "  Reboot recommended  ($Reason)" -ForegroundColor Yellow
-    Write-Host "  Script resumes automatically at step '$NextStep' after login." -ForegroundColor DarkGray
+    Write-Status "Reboot required  ($Reason)" "Yellow"
+    Write-Status "Script will resume automatically at login." "DarkGray"
     Write-Host ""
     if (Prompt-YesNo "Reboot now?") {
-        Write-Log "Rebooting. Resume step: $NextStep"
-        Start-Sleep -Seconds 5; Restart-Computer -Force
+        Write-Log "Rebooting now. Resume step: $NextStep" -Level "INFO"
+        Start-Sleep -Seconds 5
+        Restart-Computer -Force
     } else {
-        Write-Log "Reboot skipped. Resume step: $NextStep"
-        Write-Host "  Run manually: .\Manage-NvidiaDriver.ps1 -Resume" -ForegroundColor DarkGray
+        Write-Log "Reboot deferred. Resume step: $NextStep" -Level "INFO"
+        Write-Status "Reboot when ready. Resume manually with: -Resume" "DarkGray"
     }
 }
 
@@ -436,21 +498,26 @@ function Request-Reboot {
 function Step-ShowStatus {
     Show-Section "Current GPU Status"
     $info = Get-InstalledNvidiaInfo
-    if (-not $info.Installed) { Write-Host "  [!] No NVIDIA driver detected." -ForegroundColor Red; return $info }
+    if (-not $info.Installed) {
+        Write-Status "[!] No NVIDIA driver detected." "Red"
+        return $info
+    }
     $vc = switch ($info.Variant) { "Gaming"{"Magenta"} "GRID"{"Blue"} default{"Gray"} }
-    Write-Host "  GPU Model   : " -NoNewline; Write-Host $info.GpuName    -ForegroundColor Cyan
-    Write-Host "  Driver Ver  : " -NoNewline; Write-Host $info.Version    -ForegroundColor Cyan
-    Write-Host "  Variant     : " -NoNewline; Write-Host $info.Variant    -ForegroundColor $vc
-    if ($info.DriverDate) { Write-Host "  Driver Date : " -NoNewline; Write-Host $info.DriverDate -ForegroundColor DarkGray }
+    Write-Host "  GPU Model   : " -NoNewline; Write-Host $info.GpuName -ForegroundColor Cyan
+    Write-Host "  Driver Ver  : " -NoNewline; Write-Host $info.Version -ForegroundColor Cyan
+    Write-Host "  Variant     : " -NoNewline; Write-Host $info.Variant -ForegroundColor $vc
+    if ($info.DriverDate) {
+        Write-Host "  Driver Date : " -NoNewline; Write-Host $info.DriverDate -ForegroundColor DarkGray
+    }
     Write-Host ""
-    Write-Log "Installed driver: $($info.Version) [$($info.Variant)] on $($info.GpuName)"
+    Write-Log "Installed: $($info.Version) [$($info.Variant)] on $($info.GpuName)" -Level "INFO"
     return $info
 }
 
 function Step-CheckOnline {
     param($info)
     Show-Section "Online Version Check"
-    Write-Host "  Checking for newer drivers..." -ForegroundColor Yellow
+    Write-Status "Checking for newer drivers..." "Yellow"
     $latestGaming = Get-LatestGamingVersion
     $latestGrid   = Get-LatestGridVersion
     Write-Host "  Installed     : $($info.Version)  [$($info.Variant)]" -ForegroundColor White
@@ -462,9 +529,9 @@ function Step-CheckOnline {
         $latest = if ($info.Variant -eq "GRID") { $latestGrid.Version } else { $latestGaming.Version }
         if ([Version]$latest -gt [Version]$info.Version) {
             $updateAvailable = $true
-            Write-Host "  [+] Update available: $latest" -ForegroundColor Green
-        } else { Write-Host "  [=] Driver is up to date." -ForegroundColor Green }
-    } catch { Write-Host "  [?] Version comparison unavailable." -ForegroundColor DarkGray }
+            Write-Status "[+] Update available: $latest" "Green"
+        } else { Write-Status "[=] Driver is up to date." "Green" }
+    } catch { Write-Status "[?] Could not compare versions." "DarkGray" }
     return @{ UpdateAvailable=$updateAvailable; LatestGaming=$latestGaming; LatestGrid=$latestGrid }
 }
 
@@ -479,14 +546,15 @@ function Step-ActionMenu {
     $opts += "Set Virtual Display as primary display"
     $opts += "Show status only  (no changes)"
     $sel = Prompt-Menu "What would you like to do?" $opts
-    if ($sel -eq 0) { Write-Host "  Cancelled." -ForegroundColor DarkGray; return $null }
+    if ($sel -eq 0) { Write-Status "Cancelled." "DarkGray"; return $null }
     return $opts[$sel - 1]
 }
 
 # ─────────────────────────────────────────────────────────────
-#  FULL INSTALL FLOW  (reboot-safe 4-step state machine)
+#  FULL INSTALL FLOW
 #
-#  Steps: FRESH -> AFTER_DOWNLOAD -> AFTER_UNINSTALL -> AFTER_REGISTRY -> done
+#  Steps: FRESH -> AFTER_DOWNLOAD -> AFTER_UNINSTALL_AND_CLEANUP -> done
+#  Only ONE reboot required (after uninstall + registry cleanup combined).
 # ─────────────────────────────────────────────────────────────
 function Invoke-FullInstall {
     param([string]$TargetVariant, [string]$Version, [string]$S3Bucket = "", [string]$S3Key = "")
@@ -499,22 +567,24 @@ function Invoke-FullInstall {
     $state.S3Key         = $S3Key
 
     # ── STEP 1: PRE-FLIGHT + DOWNLOAD ────────────────────────
-    if ($state.Step -notin @("AFTER_DOWNLOAD","AFTER_UNINSTALL","AFTER_REGISTRY")) {
-        Write-Host ""; Write-Host "  Step 1 / 4  --  Pre-flight & Download" -ForegroundColor White
+    if ($state.Step -notin @("AFTER_DOWNLOAD","AFTER_UNINSTALL_AND_CLEANUP")) {
+        Write-Host ""; Write-Host "  Step 1 / 3  --  Pre-flight & Download" -ForegroundColor White
 
         if (-not (Get-Command Get-S3Object -ErrorAction SilentlyContinue)) {
-            Write-Host "  ERROR: AWS Tools for PowerShell not installed." -ForegroundColor Red
-            Write-Host "  Run: Install-Module -Name AWSPowerShell -Force -AllowClobber" -ForegroundColor Yellow
-            Write-Log "Pre-flight failed: AWS Tools not installed" -Level "ERROR"; return
+            Write-Status "ERROR: AWS Tools for PowerShell not installed." "Red"
+            Write-Status "Run: Install-Module -Name AWSPowerShell -Force -AllowClobber" "Yellow"
+            Write-Log "Pre-flight failed: AWS Tools not installed" -Level "ERROR"
+            return
         }
-        Write-Host "  [OK] AWS Tools available" -ForegroundColor Green
+        Write-Status "[OK] AWS Tools available" "Green"
 
-        $disk = Get-PSDrive ((Split-Path $TempDir -Qualifier).TrimEnd(":")) -ErrorAction SilentlyContinue
+        $disk = Get-PSDrive ((Split-Path $DownloadDir -Qualifier).TrimEnd(":")) -ErrorAction SilentlyContinue
         if ($disk -and $disk.Free -lt 2GB) {
-            Write-Host "  ERROR: Not enough disk space ($([math]::Round($disk.Free/1GB,1)) GB free, need 2 GB)" -ForegroundColor Red
-            Write-Log "Pre-flight failed: insufficient disk space" -Level "ERROR"; return
+            Write-Status "ERROR: Not enough disk space ($([math]::Round($disk.Free/1GB,1)) GB free, need 2 GB)" "Red"
+            Write-Log "Pre-flight failed: insufficient disk space" -Level "ERROR"
+            return
         }
-        Write-Host "  [OK] Disk space sufficient" -ForegroundColor Green
+        Write-Status "[OK] Disk space sufficient" "Green"
 
         # Resolve S3 info if not supplied
         $dlBucket = $S3Bucket; $dlKey = $S3Key
@@ -526,48 +596,48 @@ function Invoke-FullInstall {
 
         $installer = Get-DriverPackage -Variant $TargetVariant -S3Bucket $dlBucket -S3Key $dlKey
         if (-not $installer -or -not (Test-Path $installer)) {
-            Write-Host "  ERROR: Download failed. Current driver untouched." -ForegroundColor Red
-            Write-Log "Pre-flight failed: download failed" -Level "ERROR"; return
+            Write-Status "Download failed. Current driver untouched." "Red"
+            Write-Log "Pre-flight failed: download failed" -Level "ERROR"
+            return
         }
-        Write-Host "  [OK] Driver ready: $installer" -ForegroundColor Green
+        Write-Status "[OK] Driver ready: $(Split-Path $installer -Leaf)" "Green"
         $state.InstallerPath = $installer
         $state.Step = "AFTER_DOWNLOAD"
         Save-State $state
     }
 
-    # ── STEP 2: UNINSTALL ─────────────────────────────────────
-    if ($state.Step -notin @("AFTER_UNINSTALL","AFTER_REGISTRY")) {
-        Write-Host ""; Write-Host "  Step 2 / 4  --  Uninstall" -ForegroundColor White
+    # ── STEP 2: UNINSTALL + REGISTRY CLEANUP (combined, 1 reboot) ──
+    if ($state.Step -eq "AFTER_DOWNLOAD") {
+        Write-Host ""; Write-Host "  Step 2 / 3  --  Uninstall & Registry Cleanup" -ForegroundColor White
         $state.Step = "UNINSTALLING"; Save-State $state
         Invoke-NvidiaUninstall
-        $state.Step = "AFTER_UNINSTALL"; Save-State $state
-        Request-Reboot -Reason "Clean uninstall completed" -NextStep "AFTER_UNINSTALL"
-    }
-
-    # ── STEP 3: REGISTRY CLEANUP ──────────────────────────────
-    if ($state.Step -eq "AFTER_UNINSTALL") {
-        Write-Host ""; Write-Host "  Step 3 / 4  --  Registry Cleanup" -ForegroundColor White
         Invoke-RegistryCleanup
-        $state.Step = "AFTER_REGISTRY"; Save-State $state
-        Request-Reboot -Reason "Registry cleanup completed" -NextStep "AFTER_REGISTRY"
+        $state.Step = "AFTER_UNINSTALL_AND_CLEANUP"; Save-State $state
+        Request-Reboot -Reason "Uninstall + registry cleanup completed" -NextStep "AFTER_UNINSTALL_AND_CLEANUP"
     }
 
-    # ── STEP 4: INSTALL ───────────────────────────────────────
-    if ($state.Step -eq "AFTER_REGISTRY") {
-        Write-Host ""; Write-Host "  Step 4 / 4  --  Install $($state.TargetVariant) Driver ($($state.TargetVersion))" -ForegroundColor White
+    # ── STEP 3: INSTALL ───────────────────────────────────────
+    if ($state.Step -eq "AFTER_UNINSTALL_AND_CLEANUP") {
+        Write-Host ""; Write-Host "  Step 3 / 3  --  Install $($state.TargetVariant) Driver ($($state.TargetVersion))" -ForegroundColor White
 
         $installer = $state.InstallerPath
         if (-not $installer -or -not (Test-Path $installer)) {
-            Write-Host "  Cached installer missing -- re-downloading..." -ForegroundColor Yellow
+            Write-Status "Cached installer missing -- re-downloading..." "Yellow"
+            Write-Log "Installer missing from cache, re-downloading" -Level "WARN"
             $installer = Get-DriverPackage -Variant $state.TargetVariant -S3Bucket $state.S3Bucket -S3Key $state.S3Key
         }
-        if (-not $installer) { Write-Host "  No installer available. Aborting." -ForegroundColor Red; Clear-State; return }
+        if (-not $installer -or -not (Test-Path $installer)) {
+            Write-Status "No installer available. Cannot continue." "Red"
+            Write-Log "Install aborted: no installer available" -Level "ERROR"
+            Write-Host ""
+            Write-Status "State preserved. Re-run to retry." "Yellow"
+            return
+        }
 
         $ok = Install-NvidiaDriver -InstallerPath $installer -Variant $state.TargetVariant
 
         if ($ok) {
             if ($state.TargetVariant -eq "Gaming") { Set-GamingLicense }
-            $state.Step = "AFTER_INSTALL"; Save-State $state
             Set-NvidiaVirtualDisplayAsPrimary
             Clear-State
             Write-Host ""
@@ -575,10 +645,14 @@ function Invoke-FullInstall {
             Write-Host "  |  Installation completed successfully.          |" -ForegroundColor Green
             Write-Host "  +----------------------------------------------+" -ForegroundColor Green
             Write-Host ""
-            if (Prompt-YesNo "Reboot now to finalize driver?") { Start-Sleep -Seconds 5; Restart-Computer -Force }
+            Write-Log "Installation completed successfully" -Level "OK"
+            if (Prompt-YesNo "Reboot now to finalize driver?") {
+                Start-Sleep -Seconds 5; Restart-Computer -Force
+            }
         } else {
-            Write-Host "  Installation failed. Re-run to retry." -ForegroundColor Red
-            Write-Log "Installation failed. State preserved at AFTER_REGISTRY." -Level "ERROR"
+            Write-Host ""
+            Write-Status "Installation failed. State preserved -- re-run to retry." "Red"
+            Write-Log "Installation failed. State preserved at AFTER_UNINSTALL_AND_CLEANUP." -Level "ERROR"
         }
     }
 }
@@ -586,7 +660,7 @@ function Invoke-FullInstall {
 # ─────────────────────────────────────────────────────────────
 #  ENTRY POINT
 # ─────────────────────────────────────────────────────────────
-foreach ($dir in @($WorkDir,$TempDir)) {
+foreach ($dir in @($WorkDir,$DownloadDir)) {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 }
 
@@ -610,31 +684,42 @@ $ps.AddScript({
     }
 }) | Out-Null
 $handle = $ps.BeginInvoke()
-
-Set-AwsCredentials   # First load of AWS SDK DLLs takes ~30s
-
+Set-AwsCredentials
 $stopFlag[0] = $true
 Start-Sleep -Milliseconds 200
 $ps.EndInvoke($handle) | Out-Null
 $ps.Dispose(); $rs.Close()
 Write-Host "`r  Loading Prerequisites... done.  " -ForegroundColor Green
 
-# ── Resume ────────────────────────────────────────────────────
+# ── Check for saved state ─────────────────────────────────────
 $existingState = Load-State
-if ($existingState -and ($Resume -or $existingState.Step -in @("FRESH","AFTER_DOWNLOAD","AFTER_UNINSTALL","AFTER_REGISTRY"))) {
-    Write-Host "  Resuming from step: $($existingState.Step)" -ForegroundColor Yellow
-    Write-Log "Resuming from step: $($existingState.Step)"
+$resumeAction  = $null
+
+if ($existingState -and $existingState.Step -in @("AFTER_DOWNLOAD","AFTER_UNINSTALL_AND_CLEANUP","UNINSTALLING")) {
+    if ($Resume) {
+        $resumeAction = "resume"
+    } else {
+        $resumeAction = Show-StateDialog -State $existingState
+    }
+}
+
+if ($resumeAction -eq "resume") {
+    Write-Host ""
+    Write-Status "Resuming from step: $($existingState.Step)" "Yellow"
+    Write-Log "Resuming from step: $($existingState.Step)" -Level "INFO"
     $cur = Get-InstalledNvidiaInfo
-    Write-Host "  $(if($cur.Installed){"Found: $($cur.Version) [$($cur.Variant)] -- $($cur.GpuName)"}else{"No driver detected."})" -ForegroundColor Cyan
+    Write-Status "Current: $(if($cur.Installed){"$($cur.Version) [$($cur.Variant)] -- $($cur.GpuName)"}else{"No driver detected."})" "Cyan"
     Write-Host ""
     $rBucket = $existingState.S3Bucket; $rKey = $existingState.S3Key
     if (-not $rBucket -or -not $rKey) {
+        Write-Status "S3 info missing -- re-fetching..." "Yellow"
         $rf = if ($existingState.TargetVariant -eq "GRID") { Get-LatestGridVersion } else { Get-LatestGamingVersion }
         $rBucket = $rf.S3Bucket; $rKey = $rf.S3Key
         if (-not $existingState.TargetVersion) { $existingState.TargetVersion = $rf.Version }
     }
     Invoke-FullInstall -TargetVariant $existingState.TargetVariant -Version $existingState.TargetVersion `
         -S3Bucket $rBucket -S3Key $rKey
+    Write-Host ""; Write-Status "Log: $LogFile" "DarkGray"; Write-Host ""
     exit 0
 }
 
@@ -646,12 +731,13 @@ if (-not $info.Installed) {
     $s3 = if ($variant -eq "GRID") { Get-LatestGridVersion } else { Get-LatestGamingVersion }
     Save-State @{ Step="FRESH"; TargetVariant=$variant; TargetVersion=$s3.Version; S3Bucket=$s3.S3Bucket; S3Key=$s3.S3Key }
     Invoke-FullInstall -TargetVariant $variant -Version $s3.Version -S3Bucket $s3.S3Bucket -S3Key $s3.S3Key
+    Write-Host ""; Write-Status "Log: $LogFile" "DarkGray"; Write-Host ""
     exit 0
 }
 
 $online = Step-CheckOnline -info $info
 $action = Step-ActionMenu  -info $info -online $online
-if ($null -eq $action) { exit 0 }
+if ($null -eq $action) { Write-Host ""; Write-Status "Log: $LogFile" "DarkGray"; Write-Host ""; exit 0 }
 
 switch -Wildcard ($action) {
     "*Update*" {
@@ -675,9 +761,9 @@ switch -Wildcard ($action) {
         Invoke-FullInstall -TargetVariant $info.Variant -Version $info.Version -S3Bucket $s3.S3Bucket -S3Key $s3.S3Key
     }
     "*Virtual Display*" { Set-NvidiaVirtualDisplayAsPrimary }
-    default             { Write-Host "  No action taken." -ForegroundColor DarkGray }
+    default             { Write-Status "No action taken." "DarkGray" }
 }
 
 Write-Host ""
-Write-Host "  Log: $LogFile" -ForegroundColor DarkGray
+Write-Status "Log: $LogFile" "DarkGray"
 Write-Host ""
