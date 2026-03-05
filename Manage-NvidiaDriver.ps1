@@ -421,8 +421,8 @@ function Get-DriverPackage {
 
     if (-not (Test-Path $TempDir)) { New-Item -ItemType Directory -Path $TempDir -Force | Out-Null }
 
-    # ── GRID: download from official AWS S3 bucket ────────────
-    if ($Variant -eq "GRID" -and $S3Bucket -and $S3Key) {
+    # ── S3 download (GRID and Gaming both use S3) ────────────
+    if ($S3Bucket -and $S3Key) {
         $dest = "$TempDir\$(Split-Path $S3Key -Leaf)"
         if (Test-Path $dest) {
             Write-Host "  Installer already cached: $dest" -ForegroundColor Green
@@ -444,7 +444,7 @@ function Get-DriverPackage {
         } catch {
             Write-Host "  S3 download failed: $_" -ForegroundColor Red
             Write-Host "  Make sure the instance has AmazonS3ReadOnlyAccess IAM policy." -ForegroundColor Yellow
-            Write-Log "S3 download failed: $_" -Level "ERROR"
+            Write-Log "S3 download failed ($Variant): $_" -Level "ERROR"
             return ""
         }
     }
