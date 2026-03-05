@@ -26,10 +26,11 @@ param([switch]$Resume)
 $WorkDir      = "C:\Program Files\airgpu\Driver Manager"
 $StateFile    = "$WorkDir\state.json"
 $LogFile      = "$WorkDir\driver_manager.log"
-$TempDir      = "C:\Temp\airgpuDriverManager"
+$TempDir      = "C:\Program Files\airgpu\Driver Manager\Downloads"
 $RunKey       = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 $RunName      = "airgpuDriverManagerResume"
 $ScriptPath   = $MyInvocation.MyCommand.Path
+$ExePath      = "C:\Program Files\airgpu\airgpu-driver-manager.exe"
 $AwsCredsFile = "$env:USERPROFILE\.aws\credentials"
 
 # ─────────────────────────────────────────────────────────────
@@ -94,8 +95,9 @@ function Register-ResumeOnBoot {
     if ($null -eq $state) { $state = @{} }
     $state.Step = $NextStep
     Save-State $state
-    $action    = New-ScheduledTaskAction -Execute "powershell.exe" `
-                     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Resume"
+    $launchTarget = if (Test-Path $ExePath) { $ExePath } else { "powershell.exe" }
+    $launchArgs   = if (Test-Path $ExePath) { "-Resume" } else { "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Resume" }
+    $action    = New-ScheduledTaskAction -Execute $launchTarget -Argument $launchArgs
     $trigger   = New-ScheduledTaskTrigger -AtLogOn
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
                      -LogonType Interactive -RunLevel Highest
@@ -103,7 +105,7 @@ function Register-ResumeOnBoot {
     Register-ScheduledTask -TaskName "airgpuDriverManagerResume" -Action $action `
         -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
     Set-ItemProperty -Path $RunKey -Name $RunName `
-        -Value "powershell.exe -ExecutionPolicy Bypass -WindowStyle Normal -File `"$ScriptPath`" -Resume" `
+        -Value "$(if (Test-Path $ExePath) { $ExePath } else { "powershell.exe -ExecutionPolicy Bypass -WindowStyle Normal -File `"$ScriptPath`"" }) -Resume" `
         -ErrorAction SilentlyContinue
     Write-Log "Registered resume task for step: $NextStep"
 }
