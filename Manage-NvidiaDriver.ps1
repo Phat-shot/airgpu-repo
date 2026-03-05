@@ -249,7 +249,7 @@ function Get-LatestGamingVersion {
     # Requires AmazonS3ReadOnlyAccess + nvidia-gaming bucket access (G4dn/G5 only)
     try {
         if (-not (Get-Command Get-S3Object -ErrorAction SilentlyContinue)) { throw "No AWS Tools" }
-        $objects = Get-S3Object -BucketName "nvidia-gaming" -KeyPrefix "windows/latest" -Region "us-east-1" -ErrorAction Stop
+        $objects = Get-S3Object -BucketName "nvidia-gaming" -KeyPrefix "windows/latest/" -Region "us-east-1" -ErrorAction Stop
         $exe = $objects | Where-Object { $_.Key -like "*.exe" } | Select-Object -First 1
         if ($exe) {
             $fname = Split-Path $exe.Key -Leaf
@@ -269,7 +269,7 @@ function Get-LatestGridVersion {
     # Bucket: ec2-windows-nvidia-drivers, prefix: latest/
     # Requires AmazonS3ReadOnlyAccess IAM policy on the instance
     try {
-        $objects = Get-S3Object -BucketName "ec2-windows-nvidia-drivers" -KeyPrefix "latest" -Region "us-east-1" -ErrorAction Stop
+        $objects = Get-S3Object -BucketName "ec2-windows-nvidia-drivers" -KeyPrefix "latest/" -Region "us-east-1" -ErrorAction Stop
         $exe = $objects | Where-Object { $_.Key -like "*.exe" } | Select-Object -First 1
         if ($exe) {
             $fname = Split-Path $exe.Key -Leaf
