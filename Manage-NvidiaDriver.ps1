@@ -249,19 +249,14 @@ function Get-InstalledNvidiaInfo {
     $vGaming = (Get-ItemProperty "HKLM:\SOFTWARE\NVIDIA Corporation\Global" -Name "vGamingMarketplace" -ErrorAction SilentlyContinue).vGamingMarketplace
 
     if     ($vGaming -eq 2)                                                              { $info.Variant = "Gaming" }
-
     elseif ($names -match "GRID|vGPU|Virtual GPU|Tesla|Enterprise")                     { $info.Variant = "GRID" }
     elseif ($names -match "GeForce|Game Ready|Gaming|Studio")               { $info.Variant = "Gaming" }
     elseif ($info.GpuName -match "Tesla|A10|A100|T4|V100|K80|A10G|L4|L40") { $info.Variant = "GRID" }
     else {
-        $info.Variant = if (Get-ChildItem "$env:SystemRoot\System32\DriverStore\FileRepository" `
-            -Filter "nvgridswgame*" -ErrorAction SilentlyContinue) { "Gaming" }
-
-        elseif (Get-ChildItem "$env:SystemRoot\System32\DriverStore\FileRepository" `
-
-            -Filter "nvgridsw_aws*" -ErrorAction SilentlyContinue) { "GRID" }
-
-        else { "Unknown" }
+        $repoPath = "$env:SystemRoot\System32\DriverStore\FileRepository"
+        if     (Get-ChildItem $repoPath -Filter "nvgridswgame*" -ErrorAction SilentlyContinue) { $info.Variant = "Gaming" }
+        elseif (Get-ChildItem $repoPath -Filter "nvgridsw_aws*" -ErrorAction SilentlyContinue) { $info.Variant = "GRID" }
+        else   { $info.Variant = "Unknown" }
     }
     return $info
 }
@@ -284,7 +279,8 @@ function Get-S3DriverInfo {
 }
 
 function Get-LatestGamingVersion {
-    return Get-S3DriverInfo -Bucket "nvidia-gaming" -Prefix "windows/latest/" }
+    return Get-S3DriverInfo -Bucket "nvidia-gaming" -Prefix "windows/latest/"
+}
 
 function Test-GamingDriverSupported {
     param([string]$GpuName)
@@ -298,7 +294,8 @@ function Test-GamingDriverSupported {
 }
 
 function Get-LatestGridVersion {
-    return Get-S3DriverInfo -Bucket "ec2-windows-nvidia-drivers" -Prefix "latest/" }
+    return Get-S3DriverInfo -Bucket "ec2-windows-nvidia-drivers" -Prefix "latest/"
+}
 
 # -------------------------------------------------------------
 #  UNINSTALL
