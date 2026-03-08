@@ -60,6 +60,7 @@ function Start-Spinner {
     $psh = [System.Management.Automation.PowerShell]::Create(); $psh.Runspace = $rs
     $psh.AddScript({
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        chcp 65001 | Out-Null
         $frames = [char[]]@(0x280B,0x2819,0x2839,0x2838,0x283C,0x2834,0x2826,0x2827,0x2807,0x280F)
         $i = 0
         while (-not $stopFlag[0]) {
@@ -247,7 +248,7 @@ function Get-InstalledNvidiaInfo {
 
     # Fall back to WMI if nvidia-smi unavailable
     if (-not $smiOk) {
-        $gpu = Get-WmiObject Win32_VideoController |
+        $gpu = Get-CimInstance Win32_VideoController |
             Where-Object { $_.Name -like "*NVIDIA*" -or $_.AdapterCompatibility -like "*NVIDIA*" } |
             Select-Object -First 1
         if (-not $gpu) { return $info }  # no NVIDIA GPU found at all
@@ -377,8 +378,10 @@ function Invoke-NvidiaUninstall {
     }
     if ($setup) {
         Write-Log "Running display driver uninstaller" -Level "INFO"
-        try { Start-Process $setup.FullName -ArgumentList "-s -noreboot -clean" -Wait -NoNewWindow }
-        catch { Write-Log "Display driver uninstall failed: $_" -Level "WARN" }
+        try {
+            $setupProc = Start-Process $setup.FullName -ArgumentList "-s -noreboot -clean" -PassThru -NoNewWindow
+            while (-not $setupProc.HasExited) { Start-Sleep -Milliseconds 500 }
+        } catch { Write-Log "Display driver uninstall failed: $_" -Level "WARN" }
     } else {
         $list = pnputil /enum-drivers 2>&1
         [regex]::Matches($list, 'oem\d+\.inf') | Select-Object -ExpandProperty Value -Unique | ForEach-Object {
@@ -541,7 +544,6 @@ function Install-NvidiaDriver {
         # Use PassThru without -Wait so the spinner runspace keeps running
         $proc = Start-Process -FilePath $InstallerPath -ArgumentList $argList -PassThru -NoNewWindow
         while (-not $proc.HasExited) { Start-Sleep -Milliseconds 500 }
-        $proc.WaitForExit()
         Stop-Spinner -ctx $spinCtx -Done "Install complete." -Color $color
         [Console]::Out.Flush()
         Write-Host ""
@@ -616,14 +618,16 @@ function Step-ShowStatus {
 
 function Step-CheckOnline {
     param($info)
-    Write-Host "  Checking for updates..." -ForegroundColor DarkGray
     $spinCtx = Start-Spinner -Label "Checking for updates"
-    $latestGaming = Get-LatestGamingVersion
-    $latestGrid   = Get-LatestGridVersion
+    # Fetch current variant first; other is retrieved lazily (both are cached after first call)
+    $latestSame  = if ($info.Variant -eq "GRID") { Get-LatestGridVersion }   else { Get-LatestGamingVersion }
+    $latestOther = if ($info.Variant -eq "GRID") { Get-LatestGamingVersion } else { Get-LatestGridVersion }
+    $latestGaming = if ($info.Variant -eq "Gaming") { $latestSame } else { $latestOther }
+    $latestGrid   = if ($info.Variant -eq "GRID")   { $latestSame } else { $latestOther }
     $updateAvailable = $false
     $updateVersion   = ""
     try {
-        $latest = if ($info.Variant -eq "GRID") { $latestGrid.Version } else { $latestGaming.Version }
+        $latest = $latestSame.Version
         if ([Version]$latest -gt [Version]$info.Version) {
             $updateAvailable = $true; $updateVersion = $latest
         }
@@ -669,6 +673,15 @@ function Step-ActionMenu {
 # -------------------------------------------------------------
 function Invoke-FullInstall {
     param([string]$TargetVariant, [string]$Version, [string]$S3Bucket = "", [string]$S3Key = "")
+
+    # Ensure AWS credentials loaded (may have been skipped on resume path)
+    if (-not $script:AwsCredentialsLoaded) {
+        $_awsCtx = Start-Spinner -Label "Loading"
+        $oldOut = [Console]::Out
+        [Console]::SetOut([System.IO.TextWriter]::Null)
+        try { Set-AwsCredentials } finally { [Console]::SetOut($oldOut) }
+        Stop-Spinner -ctx $_awsCtx
+    }
 
     $state = Load-State
     if (-not $state) { $state = @{} }
@@ -774,6 +787,7 @@ function Invoke-FullInstall {
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::InputEncoding  = [System.Text.Encoding]::UTF8
 $OutputEncoding           = [System.Text.Encoding]::UTF8
+chcp 65001 | Out-Null  # UTF-8 codepage for correct Braille/block char rendering
 
 foreach ($dir in @($WorkDir,$DownloadDir)) {
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -781,21 +795,20 @@ foreach ($dir in @($WorkDir,$DownloadDir)) {
 
 Show-Banner
 
-# -- Load AWS (spinner suppresses SDK init output) ----------
-$_loadCtx = Start-Spinner -Label "Loading"
-$oldOut = [Console]::Out
-[Console]::SetOut([System.IO.TextWriter]::Null)
-try { Set-AwsCredentials } finally { [Console]::SetOut($oldOut) }
-Stop-Spinner -ctx $_loadCtx
-
-# -- Check for saved state -------------------------------------
+# -- Check for saved state (before loading AWS -- resume may not need S3) ----
 $existingState = Load-State
+$isResume = $existingState -and $existingState.Step -in @("AFTER_DOWNLOAD","AFTER_UNINSTALL_AND_CLEANUP","UNINSTALLING")
 
-if ($existingState -and $existingState.Step -in @("AFTER_DOWNLOAD","AFTER_UNINSTALL_AND_CLEANUP","UNINSTALLING")) {
-    $resumeAction = "resume"
+# -- Load AWS credentials (skip on resume -- S3 loaded lazily if needed) ----
+if (-not $isResume) {
+    $_loadCtx = Start-Spinner -Label "Loading"
+    $oldOut = [Console]::Out
+    [Console]::SetOut([System.IO.TextWriter]::Null)
+    try { Set-AwsCredentials } finally { [Console]::SetOut($oldOut) }
+    Stop-Spinner -ctx $_loadCtx
 }
 
-if ($resumeAction -eq "resume") {
+if ($isResume) {
     Write-Host ""
     $stepDesc = switch ($existingState.Step) {
         "AFTER_DOWNLOAD"             { "Driver downloaded -- ready to uninstall" }
@@ -807,15 +820,10 @@ if ($resumeAction -eq "resume") {
     Write-Host "  Resuming: " -NoNewline -ForegroundColor Yellow
     Write-Host $stepDesc -ForegroundColor White
     Write-Log "Resuming from step: $($existingState.Step)" -Level "INFO"
-    $cur = Get-InstalledNvidiaInfo
-    if ($cur.Installed) {
-        $vc = switch ($cur.Variant) { "Gaming"{"Magenta"} "GRID"{"Cyan"} default{"Gray"} }
-        Write-Host "  $($cur.GpuName)  " -NoNewline -ForegroundColor DarkGray
-        Write-Host "$($cur.Version)  " -NoNewline -ForegroundColor White
-        Write-Host "[$($cur.Variant)]" -ForegroundColor $vc
-    }
-    Write-Host "  Target:   " -NoNewline -ForegroundColor DarkGray
-    Write-Host "$($existingState.TargetVariant) $($existingState.TargetVersion)" -ForegroundColor White
+    # Show target info from state (live GPU query unreliable after uninstall)
+    $vc = switch ($existingState.TargetVariant) { "Gaming"{"Magenta"} "GRID"{"Cyan"} default{"Gray"} }
+    Write-Host "  Installing: " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$($existingState.TargetVariant) $($existingState.TargetVersion)" -ForegroundColor $vc
     Write-Host ""
     $rBucket = $existingState.S3Bucket; $rKey = $existingState.S3Key
     if (-not $rBucket -or -not $rKey) {
