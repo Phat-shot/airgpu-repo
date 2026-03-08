@@ -60,7 +60,6 @@ function Start-Spinner {
     $psh = [System.Management.Automation.PowerShell]::Create(); $psh.Runspace = $rs
     $psh.AddScript({
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        chcp 65001 | Out-Null
         $frames = [char[]]@(0x280B,0x2819,0x2839,0x2838,0x283C,0x2834,0x2826,0x2827,0x2807,0x280F)
         $i = 0
         while (-not $stopFlag[0]) {
