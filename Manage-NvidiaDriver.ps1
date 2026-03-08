@@ -143,7 +143,7 @@ function Save-State {
     param([hashtable]$State)
     if (-not (Test-Path $WorkDir)) { New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null }
     $State | ConvertTo-Json -Depth 5 | Set-Content -Path $StateFile -Encoding UTF8
-    Write-Log "State: $($State.Step)" -Level "INFO"
+
 }
 
 function Load-State {
@@ -357,6 +357,21 @@ function Invoke-NvidiaUninstall {
     Write-Log "Uninstall started" -Level "INFO"
     $spinCtx = Start-Spinner -Label "Uninstalling"
 
+    # Kill NVIDIA Desktop Manager + Container before uninstall
+    @("nvdm","nvdmui","NVDisplay.Container") | ForEach-Object {
+        Get-Process -Name $_ -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+
+    # Remove NVIDIA Control Panel + Desktop Manager AppX packages
+    @("NVIDIACorp.NVIDIAControlPanel","NVIDIACorp.NvidiaDisplayContainer") | ForEach-Object {
+        $pkg = Get-AppxPackage -Name $_ -AllUsers -ErrorAction SilentlyContinue
+        if ($pkg) {
+            Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction SilentlyContinue
+            Write-Log "Removed AppX: $_" -Level "INFO"
+        }
+    }
+
+
     # Registered entries
     $apps = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" `
@@ -549,7 +564,7 @@ function Install-NvidiaDriver {
             Write-Log "Driver installed successfully (ExitCode: $($proc.ExitCode))" -Level "OK"
             return $true
         }
-        Write-Log "Driver installer exited with code $($proc.ExitCode)" -Level "WARN"
+        Write-Log "Driver installer exited with non-zero code: $($proc.ExitCode)" -Level "WARN"
         return $true
     } catch {
         Stop-Spinner -ctx $spinCtx
@@ -714,6 +729,7 @@ function Invoke-FullInstall {
         Invoke-RegistryCleanup
         $state.Step = "AFTER_UNINSTALL_AND_CLEANUP"; Save-State $state
         Request-Reboot -Reason "Uninstall + registry cleanup completed" -NextStep "AFTER_UNINSTALL_AND_CLEANUP"
+        return
     }
 
     # -- STEP 3: INSTALL ---------------------------------------
