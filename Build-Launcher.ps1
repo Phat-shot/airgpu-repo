@@ -100,12 +100,24 @@ class Program {
             scriptPath, passArgs).Trim();
 
         ProcessStartInfo psi = new ProcessStartInfo();
-        psi.FileName        = "powershell.exe";
-        psi.Arguments       = psArgs;
-        psi.UseShellExecute = false;
+        psi.FileName               = "powershell.exe";
+        psi.Arguments              = psArgs;
+        psi.UseShellExecute        = false;
+        psi.RedirectStandardError  = true;
 
         Process proc = Process.Start(psi);
         proc.WaitForExit();
+        if (proc.ExitCode != 0) {
+            string err = proc.StandardError.ReadToEnd().Trim();
+            if (err.Length > 0) {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("\n  PowerShell error:");
+                Console.WriteLine(err.Length > 800 ? err.Substring(0, 800) : err);
+                Console.ResetColor();
+                Console.WriteLine("\n  Press any key to exit...");
+                Console.ReadKey();
+            }
+        }
         return proc.ExitCode;
     }
 }
