@@ -738,7 +738,7 @@ function Step-ActionMenu {
                 $opts += "Switch to Gaming / GeForce driver"
             }
         } else {
-            $opts += "Switch to Gaming / GeForce driver  [not available for $($info.GpuName)]"
+            Write-Host "  [i] $($info.GpuName) supports GRID only -- Gaming driver not available for this GPU." -ForegroundColor DarkGray
         }
     }
     if (-not $online.UpdateAvailable) { $opts += "Reinstall current driver  ($($info.Version))" }
