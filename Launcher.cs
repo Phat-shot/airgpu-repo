@@ -69,13 +69,13 @@ class Launcher
             if (File.Exists(AppExe))
             {
                 Console.WriteLine("  [!] Update check failed — using cached version.");
-                Console.WriteLine($"      {ex.Message}");
+                Console.WriteLine("      " + ex.Message);
                 System.Threading.Thread.Sleep(1500);
                 return RunApp(args);
             }
 
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"\n  Failed to download driver manager:\n  {ex.Message}");
+            Console.WriteLine("\n  Failed to download driver manager:\n  " + ex.Message);
             Console.ResetColor();
             Console.WriteLine("\n  Press any key to exit...");
             Console.ReadKey(true);
@@ -96,7 +96,7 @@ class Launcher
                 CreateNoWindow         = false,
                 WorkingDirectory       = WorkDir
             };
-            foreach (string a in args) psi.ArgumentList.Add(a);
+            if (args.Length > 0) psi.Arguments = string.Join(" ", args);
 
             var p = Process.Start(psi);
             string stderr = p.StandardError.ReadToEnd();
@@ -105,7 +105,7 @@ class Launcher
             if (p.ExitCode != 0 && !string.IsNullOrWhiteSpace(stderr))
             {
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"\n  airgpu crashed (exit {p.ExitCode}):\n");
+                Console.WriteLine("\n  airgpu crashed (exit " + p.ExitCode + "):\n");
                 Console.WriteLine("  " + stderr.Replace("\n","\n  "));
                 Console.ResetColor();
                 Console.WriteLine("\n  Press any key to exit...");
@@ -116,7 +116,7 @@ class Launcher
         catch (Exception ex)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"\n  Failed to start driver manager:\n  {ex.Message}");
+            Console.WriteLine("\n  Failed to start driver manager:\n  " + ex.Message);
             Console.ResetColor();
             Console.WriteLine("\n  Press any key to exit...");
             Console.ReadKey(true);

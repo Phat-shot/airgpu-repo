@@ -52,17 +52,25 @@ namespace AirgpuDriverManager
     class DriverInfo
     {
         public bool   Installed { get; set; }
-        public string GpuName   { get; set; } = "";
-        public string Version   { get; set; } = "";
-        public string Variant   { get; set; } = "GRID";
+        public string GpuName   { get; set; }
+        public string Version   { get; set; }
+        public string Variant   { get; set; }
+        public DriverInfo() { GpuName=""; Version=""; Variant="GRID"; }
     }
 
     class S3Info
     {
-        public string Version  { get; set; } = "Unknown";
-        public string S3Key    { get; set; } = "";
-        public string S3Bucket { get; set; } = "";
+        public string Version  { get; set; }
+        public string S3Key    { get; set; }
+        public string S3Bucket { get; set; }
         public bool   Error    { get; set; }
+        public S3Info() { Version="Unknown"; S3Key=""; S3Bucket=""; }
+    }
+
+    class AwsCreds
+    {
+        public string Key    { get; set; }
+        public string Secret { get; set; }
     }
 
     // ── COLOURS + THEME ──────────────────────────────────────────────────────
@@ -81,9 +89,9 @@ namespace AirgpuDriverManager
         public static readonly Color TextPri  = C(0xd8, 0xdc, 0xe8);
         public static readonly Color TextSec  = C(0x5a, 0x62, 0x78);
         public static readonly Color TextDim  = C(0x3a, 0x40, 0x55);
-        static Color C(byte r, byte g, byte b) => Color.FromRgb(r, g, b);
-        public static SolidColorBrush Brush(Color c) => new SolidColorBrush(c);
-        public static SolidColorBrush BrushA(Color c, byte a) => new SolidColorBrush(Color.FromArgb(a, c.R, c.G, c.B));
+        static Color C(byte r, byte g, byte b) { return Color.FromRgb(r, g, b); }
+        public static SolidColorBrush Brush(Color c) { return new SolidColorBrush(c); }
+        public static SolidColorBrush BrushA(Color c, byte a) { return new SolidColorBrush(Color.FromArgb(a, c.R, c.G, c.B)); }
     }
 
     // ── MAIN WINDOW ──────────────────────────────────────────────────────────
@@ -248,7 +256,7 @@ namespace AirgpuDriverManager
             var metaRow = new StackPanel { Orientation=Orientation.Horizontal };
             _variantBadge = new TextBlock {
                 Text="—", FontSize=9, FontFamily=new FontFamily("Consolas"),
-                FontWeight=FontWeights.SemiBold, LetterSpacing=1.5,
+                FontWeight=FontWeights.SemiBold,
                 Foreground=Theme.Brush(Theme.Accent),
                 Background=Theme.BrushA(Theme.Accent,25),
                 Padding=new Thickness(7,2,7,2),
@@ -341,14 +349,14 @@ namespace AirgpuDriverManager
             Dispatcher.Invoke(() => {
                 _progressSection.Visibility = Visibility.Visible;
                 _progressFilename.Text = filename;
-                _progressPct.Text      = $"{(int)pct}%";
+                _progressPct.Text      = (int)pct + "%";
                 // Width relative to track — use ActualWidth if available
                 double trackW = Math.Max(1, _progressSection.ActualWidth - 40);
                 _progressFill.Width = trackW * pct / 100.0;
             });
         }
 
-        void HideProgress() => Dispatcher.Invoke(() => _progressSection.Visibility = Visibility.Collapsed);
+        void HideProgress() { Dispatcher.Invoke(() => _progressSection.Visibility = Visibility.Collapsed); }
 
         void ShowGpuCard(DriverInfo info)
         {
@@ -407,7 +415,7 @@ namespace AirgpuDriverManager
             _latestGaming = tG.Result;
             _latestGrid   = tR.Result;
 
-            Log($"GPU: {_current.GpuName} | {_current.Variant} {_current.Version} | Gaming: {_latestGaming.Version} | GRID: {_latestGrid.Version}");
+            Log("GPU: " + _current.GpuName + " | " + _current.Variant + " " + _current.Version + " | Gaming: " + _latestGaming.Version + " | GRID: " + _latestGrid.Version);
 
             var latestSame = _current.Variant == "GRID" ? _latestGrid : _latestGaming;
             bool updateAvail = false;
@@ -418,8 +426,8 @@ namespace AirgpuDriverManager
 
             if (updateAvail)
             {
-                ShowUpdateBadge($"↑ {latestSame.Version}", Theme.Yellow);
-                SetStatus("Update Available", $"{_current.Variant} {latestSame.Version} ready to install.", Theme.Yellow);
+                ShowUpdateBadge("↑ " + latestSame.Version, Theme.Yellow);
+                SetStatus("Update Available", _current.Variant + " " + latestSame.Version + " ready to install.", Theme.Yellow);
             }
             else if (latestSame.Error)
                 SetStatus("Ready", "Update server unreachable — version check skipped.", Theme.TextSec);
@@ -442,8 +450,8 @@ namespace AirgpuDriverManager
 
                 if (updateAvail)
                     _actionPanel.Children.Add(ActionBtn(
-                        "↑", $"Update to {_current.Variant} {latestSame.Version}",
-                        $"Current: {_current.Version}",
+                        "↑", "Update to " + _current.Variant + " " + latestSame.Version,
+                        "Current: " + _current.Version,
                         Theme.Accent, () => BeginInstall(_current.Variant, latestSame)));
 
                 bool gamingSupported = IsGamingSupported(_current.GpuName);
@@ -452,8 +460,8 @@ namespace AirgpuDriverManager
                     _actionPanel.Children.Add(ActionBtn(
                         "⇄", "Switch to Gaming / GeForce",
                         gamingSupported
-                            ? $"Install {_latestGaming.Version} Cloud Gaming driver"
-                            : $"Not available for {_current.GpuName}",
+                            ? "Install " + _latestGaming.Version + " Cloud Gaming driver"
+                            : "Not available for " + _current.GpuName,
                         Theme.Purple,
                         gamingSupported ? (Action)(() => BeginInstall("Gaming", _latestGaming)) : null,
                         disabled: !gamingSupported));
@@ -462,7 +470,7 @@ namespace AirgpuDriverManager
                 {
                     _actionPanel.Children.Add(ActionBtn(
                         "⇄", "Switch to GRID / Enterprise",
-                        $"Install {_latestGrid.Version} GRID driver",
+                        "Install " + _latestGrid.Version + " GRID driver",
                         Theme.Accent, () => BeginInstall("GRID", _latestGrid)));
                 }
 
@@ -486,7 +494,7 @@ namespace AirgpuDriverManager
             });
 
             // Step 1: Download
-            SetStatus("Downloading", $"{variant} {s3.Version}...", Theme.Accent);
+            SetStatus("Downloading", variant + " " + s3.Version + "...", Theme.Accent);
             string installer = await Task.Run(() => DownloadDriver(s3));
             if (installer == null) {
                 SetStatus("Error", "Download failed. Check log for details.", Theme.Red);
@@ -550,7 +558,7 @@ namespace AirgpuDriverManager
                 return;
             }
 
-            SetStatus("Installing", $"{variant} {version}...", Theme.Accent);
+            SetStatus("Installing", variant + " " + version + "...", Theme.Accent);
             bool ok = await Task.Run(() => InstallDriver(installer, variant));
 
             if (ok)
@@ -559,8 +567,8 @@ namespace AirgpuDriverManager
                 await Task.Run(() => InstallControlPanel());
                 ClearState();
                 try { if (Directory.Exists(DownloadDir)) Directory.Delete(DownloadDir, true); } catch {}
-                Log($"Installation completed: {variant} {version}");
-                SetStatus("Done", $"{variant} {version} installed — reboot to activate.", Theme.Green);
+                Log("Installation completed: " + variant + " " + version);
+                SetStatus("Done", variant + " " + version + " installed — reboot to activate.", Theme.Green);
                 ShowUpdateBadge("INSTALLED", Theme.Green);
                 Dispatcher.Invoke(() => {
                     _actionPanel.Children.Clear();
@@ -616,8 +624,10 @@ namespace AirgpuDriverManager
             try {
                 var k = Microsoft.Win32.Registry.LocalMachine
                     .OpenSubKey(@"SOFTWARE\NVIDIA Corporation\Global");
-                if (k?.GetValue("vGamingMarketplace")?.ToString() == "2")
-                    { info.Variant="Gaming"; return info; }
+                if (k != null) {
+                    object gVal = k.GetValue("vGamingMarketplace");
+                    if (gVal != null && gVal.ToString() == "2") { info.Variant="Gaming"; return info; }
+                }
             } catch {}
             string names = "";
             foreach (string reg in new[]{
@@ -625,17 +635,19 @@ namespace AirgpuDriverManager
                 @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"})
                 try {
                     var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(reg);
-                    foreach (string s in k?.GetSubKeyNames() ?? new string[0])
-                        names += " " + (k.OpenSubKey(s)?.GetValue("DisplayName")?.ToString() ?? "");
+                    foreach (string s in (k != null ? k.GetSubKeyNames() : new string[0]))
+                        var _sk = k.OpenSubKey(s);
+                        if (_sk != null) { object _dn = _sk.GetValue("DisplayName"); names += " " + (_dn != null ? _dn.ToString() : ""); }
                 } catch {}
             info.Variant = Regex.IsMatch(names, @"GeForce|Game Ready|Gaming|Studio", RegexOptions.IgnoreCase)
                 ? "Gaming" : "GRID";
             return info;
         }
 
-        bool IsGamingSupported(string gpu) =>
-            Regex.IsMatch(gpu, @"\bT4\b|\bA10G\b|\bL40S\b", RegexOptions.IgnoreCase) ||
-            (Regex.IsMatch(gpu, @"\bL4\b", RegexOptions.IgnoreCase) && !Regex.IsMatch(gpu, @"\bL4[a-zA-Z]", RegexOptions.IgnoreCase));
+        bool IsGamingSupported(string gpu) {
+            return Regex.IsMatch(gpu, @"\bT4\b|\bA10G\b|\bL40S\b", RegexOptions.IgnoreCase) ||
+                   (Regex.IsMatch(gpu, @"\bL4\b", RegexOptions.IgnoreCase) && !Regex.IsMatch(gpu, @"\bL4[a-zA-Z]", RegexOptions.IgnoreCase));
+        }
 
         // ═════════════════════════════════════════════════════════════════════
         //  S3 FETCH (native HTTP + AWS Sig V4)
@@ -643,11 +655,11 @@ namespace AirgpuDriverManager
         S3Info FetchS3Version(string bucket, string prefix)
         {
             try {
-                string url = $"https://{bucket}.s3.amazonaws.com/?list-type=2&prefix={prefix}&max-keys=50";
+                string url = "https://" + bucket + ".s3.amazonaws.com/?list-type=2&prefix=" + prefix + "&max-keys=50";
                 var req = (HttpWebRequest)WebRequest.Create(url);
                 req.Timeout = 15000;
-                var creds = LoadCreds();
-                if (creds.HasValue) SignRequest(req,"GET",bucket,"/","?list-type=2&prefix="+prefix+"&max-keys=50","",creds.Value);
+                AwsCreds creds = LoadCreds();
+                if (creds != null) SignRequest(req,"GET",bucket,"/","?list-type=2&prefix="+prefix+"&max-keys=50","",creds);
                 using var resp = (HttpWebResponse)req.GetResponse();
                 using var sr   = new StreamReader(resp.GetResponseStream());
                 string xml = sr.ReadToEnd();
@@ -658,7 +670,7 @@ namespace AirgpuDriverManager
                 }
                 return new S3Info { Version="Unknown", S3Bucket=bucket };
             } catch (Exception ex) {
-                Log($"S3 fetch failed ({bucket}): {ex.Message}", "WARN");
+                Log("S3 fetch failed (" + bucket + "): " + ex.Message, "WARN");
                 return new S3Info { Version="Unknown", S3Bucket=bucket, Error=true };
             }
         }
@@ -670,14 +682,14 @@ namespace AirgpuDriverManager
         {
             if (!Directory.Exists(DownloadDir)) Directory.CreateDirectory(DownloadDir);
             string dest = Path.Combine(DownloadDir, Path.GetFileName(s3.S3Key));
-            if (File.Exists(dest)) { Log($"Using cached installer: {dest}"); return dest; }
+            if (File.Exists(dest)) { Log("Using cached installer: " + dest); return dest; }
             string tmp = dest + ".part";
             try {
-                string url = $"https://{s3.S3Bucket}.s3.amazonaws.com/{s3.S3Key}";
+                string url = "https://" + s3.S3Bucket + ".s3.amazonaws.com/" + s3.S3Key;
                 var req = (HttpWebRequest)WebRequest.Create(url);
                 req.Timeout = 600000;
-                var creds = LoadCreds();
-                if (creds.HasValue) SignRequest(req,"GET",s3.S3Bucket,"/"+s3.S3Key,"","",creds.Value);
+                AwsCreds creds = LoadCreds();
+                if (creds != null) SignRequest(req,"GET",s3.S3Bucket,"/"+s3.S3Key,"","",creds);
                 using var resp = (HttpWebResponse)req.GetResponse();
                 long total = resp.ContentLength;
                 string fname = Path.GetFileName(s3.S3Key);
@@ -689,11 +701,11 @@ namespace AirgpuDriverManager
                     if (total>0) SetProgress(fname, done*100.0/total, done/1048576, total/1048576);
                 }
                 File.Move(tmp, dest);
-                Log($"Downloaded: {dest}");
+                Log("Downloaded: " + dest);
                 return dest;
             } catch (Exception ex) {
                 if (File.Exists(tmp)) File.Delete(tmp);
-                Log($"Download failed: {ex.Message}", "ERROR");
+                Log("Download failed: " + ex.Message, "ERROR");
                 return null;
             }
         }
@@ -713,15 +725,15 @@ namespace AirgpuDriverManager
                 @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"}) {
                 try {
                     var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(reg);
-                    foreach (string sub in key?.GetSubKeyNames() ?? new string[0]) {
+                    foreach (string sub in (key != null ? key.GetSubKeyNames() : new string[0])) {
                         try {
                             var sk = key.OpenSubKey(sub);
-                            string dn = sk?.GetValue("DisplayName")?.ToString() ?? "";
-                            string us = sk?.GetValue("UninstallString")?.ToString() ?? "";
+                            string dn = ""; if (sk != null) { object _d = sk.GetValue("DisplayName"); dn = _d != null ? _d.ToString() : ""; }
+                            string us = ""; if (sk != null) { object _u = sk.GetValue("UninstallString"); us = _u != null ? _u.ToString() : ""; }
                             if (!dn.Contains("NVIDIA") || string.IsNullOrEmpty(us)) continue;
                             if (us.Contains("MsiExec")) {
                                 var m = Regex.Match(us, @"\{[^}]+\}");
-                                if (m.Success) RunWait("msiexec.exe",$"/x {m.Value} /quiet /norestart");
+                                if (m.Success) RunWait("msiexec.exe","/x " + m.Value + " /quiet /norestart");
                             } else {
                                 var m = Regex.Match(us, @"""?([^""]+\.exe)""?", RegexOptions.IgnoreCase);
                                 if (m.Success && File.Exists(m.Groups[1].Value))
@@ -756,7 +768,7 @@ namespace AirgpuDriverManager
             int n=0;
             foreach (string k in keys)
                 try { Microsoft.Win32.Registry.LocalMachine.DeleteSubKeyTree(k,false); n++; } catch {}
-            Log($"Registry cleanup: {n} keys removed");
+            Log("Registry cleanup: " + n + " keys removed");
         }
 
         // ═════════════════════════════════════════════════════════════════════
@@ -769,10 +781,10 @@ namespace AirgpuDriverManager
                 var p = Process.Start(new ProcessStartInfo(installer,args)
                     { UseShellExecute=false, CreateNoWindow=true });
                 p.WaitForExit();
-                Log($"Install exit code: {p.ExitCode}");
+                Log("Install exit code: " + p.ExitCode);
                 return p.ExitCode==0 || p.ExitCode==14;
             } catch (Exception ex) {
-                Log($"Install error: {ex.Message}","ERROR"); return false;
+                Log("Install error: " + ex.Message,"ERROR"); return false;
             }
         }
 
@@ -814,12 +826,12 @@ namespace AirgpuDriverManager
                 if (mLink.Success) {
                     string tmp = Path.Combine(Path.GetTempPath(),"NvidiaCP.msixbundle");
                     new WebClient().DownloadFile(mLink.Groups[1].Value, tmp);
-                    RunPS($"Add-AppxPackage -Path '{tmp}'");
+                    RunPS("Add-AppxPackage -Path '" + tmp + "'");
                     try { File.Delete(tmp); } catch {}
                     Log("MSIX sideload done");
                 }
             } catch (Exception ex) {
-                Log($"Control Panel install warning: {ex.Message}","WARN");
+                Log("Control Panel install warning: " + ex.Message,"WARN");
             }
         }
 
@@ -830,30 +842,30 @@ namespace AirgpuDriverManager
         {
             if (!Directory.Exists(WorkDir)) Directory.CreateDirectory(WorkDir);
             File.WriteAllText(StateFile,
-                $"{{\"Step\":\"{step}\",\"TargetVariant\":\"{variant}\",\"TargetVersion\":\"{ver}\"," +
-                $"\"InstallerPath\":\"{path.Replace("\\","\\\\")}\",\"S3Bucket\":\"{bucket}\",\"S3Key\":\"{key}\"}}");
+                {\"Step\":\"{step + "\",\"TargetVariant\":\"" + variant + "\",\"TargetVersion\":\"" + ver + "\"," +
+                "\"InstallerPath\":\"{path.Replace("\\","\\\\")}\",\"S3Bucket\":\"{bucket}\",\"S3Key\":\"{key}\"}}");
         }
         string ReadState() {
             try { return File.Exists(StateFile) ? File.ReadAllText(StateFile) : null; } catch { return null; }
         }
         void ClearState() { try { if(File.Exists(StateFile)) File.Delete(StateFile); } catch {} }
         string JsonGet(string json, string key) {
-            var m = Regex.Match(json,$"\"{key}\":\"([^\"]+)\"");
+            var m = Regex.Match(json,"\"" + key + "\":\"([^\"]+)\"");
             return m.Success ? m.Groups[1].Value.Replace("\\\\","\\") : "";
         }
         void RegisterResume() {
             try {
                 string exe = Assembly.GetExecutingAssembly().Location;
-                Microsoft.Win32.Registry.LocalMachine
-                    .OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",true)
-                    ?.SetValue("airgpuDriverManagerResume",$"\"{exe}\"");
+                var _runKey = Microsoft.Win32.Registry.LocalMachine
+                    .OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",true);
+                if (_runKey != null) _runKey.SetValue("airgpuDriverManagerResume","\"" + exe + "\"");
             } catch {}
         }
 
         // ═════════════════════════════════════════════════════════════════════
         //  AWS CREDENTIALS + SIG V4
         // ═════════════════════════════════════════════════════════════════════
-        (string key, string secret)? LoadCreds()
+        AwsCreds LoadCreds()
         {
             try {
                 if (!File.Exists(CredsFile)) return null;
@@ -862,26 +874,27 @@ namespace AirgpuDriverManager
                     if (line.Contains("aws_access_key_id"))     k=line.Split('=').Last().Trim();
                     if (line.Contains("aws_secret_access_key")) s=line.Split('=').Last().Trim();
                 }
-                return k.Length>0 && s.Length>0 ? (k,s) : ((string,string)?)null;
+                if (k.Length>0 && s.Length>0) return new AwsCreds { Key=k, Secret=s };
+                return null;
             } catch { return null; }
         }
 
         void SignRequest(HttpWebRequest req, string method, string bucket,
                          string path, string query, string body,
-                         (string key, string secret) creds)
+                         AwsCreds creds)
         {
             string date    = DateTime.UtcNow.ToString("yyyyMMdd");
             string amzDate = DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ");
-            string host    = $"{bucket}.s3.amazonaws.com";
+            string host    = bucket + ".s3.amazonaws.com";
             string payHash = Sha256(""); // empty body for GET
-            string canon   = $"{method}\n{path}\n{query.TrimStart('?')}\nhost:{host}\nx-amz-content-sha256:{payHash}\nx-amz-date:{amzDate}\n\nhost;x-amz-content-sha256;x-amz-date\n{payHash}";
-            string scope   = $"{date}/us-east-1/s3/aws4_request";
-            string sts     = $"AWS4-HMAC-SHA256\n{amzDate}\n{scope}\n{Sha256(canon)}";
-            byte[] sigKey  = Hmac(Hmac(Hmac(Hmac(Encoding.UTF8.GetBytes("AWS4"+creds.secret),date),"us-east-1"),"s3"),"aws4_request");
+            string canon   = method + "\n" + path + "\n" + query.TrimStart('?') + "\nhost:" + host + "\nx-amz-content-sha256:" + payHash + "\nx-amz-date:" + amzDate + "\n\nhost;x-amz-content-sha256;x-amz-date\n" + payHash;
+            string scope   = date + "/us-east-1/s3/aws4_request";
+            string sts     = "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + Sha256(canon);
+            byte[] sigKey  = Hmac(Hmac(Hmac(Hmac(Encoding.UTF8.GetBytes("AWS4"+creds.Secret),date),"us-east-1"),"s3"),"aws4_request");
             string sig     = BitConverter.ToString(Hmac(sigKey,sts)).Replace("-","").ToLower();
             req.Headers["x-amz-date"]           = amzDate;
             req.Headers["x-amz-content-sha256"] = payHash;
-            req.Headers["Authorization"]        = $"AWS4-HMAC-SHA256 Credential={creds.key}/{scope},SignedHeaders=host;x-amz-content-sha256;x-amz-date,Signature={sig}";
+            req.Headers["Authorization"]        = "AWS4-HMAC-SHA256 Credential=" + creds.Key + "/" + scope + ",SignedHeaders=host;x-amz-content-sha256;x-amz-date,Signature=" + sig;
         }
         static string Sha256(string s) {
             using var h=SHA256.Create();
@@ -896,10 +909,10 @@ namespace AirgpuDriverManager
         //  HELPERS
         // ═════════════════════════════════════════════════════════════════════
         void RunWait(string exe, string args) {
-            try { Process.Start(new ProcessStartInfo(exe,args){ UseShellExecute=false,CreateNoWindow=true })?.WaitForExit(); } catch {}
+            try { var _rp = Process.Start(new ProcessStartInfo(exe,args){ UseShellExecute=false,CreateNoWindow=true }); if (_rp != null) _rp.WaitForExit(); } catch {}
         }
         void RunPS(string script) =>
-            RunWait("powershell.exe",$"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"{script.Replace("\"","\\\"").Replace("'","\\'")}\"");
+            RunWait("powershell.exe","-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"{script.Replace("\"","\\\"").Replace("'","\\'")}\"");
         string FindOnPath(string name) {
             foreach (string p in (Environment.GetEnvironmentVariable("PATH")??"").Split(';'))
                 if (File.Exists(Path.Combine(p.Trim(),name))) return Path.Combine(p.Trim(),name);
@@ -908,39 +921,43 @@ namespace AirgpuDriverManager
         void Log(string msg, string level="INFO") {
             try {
                 if (!Directory.Exists(WorkDir)) Directory.CreateDirectory(WorkDir);
-                File.AppendAllText(LogFile,$"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [{level}] {msg}\n");
+                File.AppendAllText(LogFile,"[" + DateTime.Now:yyyy-MM-dd HH:mm:ss + "] [" + level + "] " + msg + "\n");
             } catch {}
         }
 
         // ── UI FACTORY HELPERS ────────────────────────────────────────────────
-        RowDefinition Row(double h, bool star=false) => star
-            ? new RowDefinition { Height=new GridLength(h,GridUnitType.Star) }
-            : double.IsNaN(h)
-                ? new RowDefinition { Height=GridLength.Auto }
-                : new RowDefinition { Height=new GridLength(h) };
+        RowDefinition Row(double h, bool star=false) {
+            if (star) return new RowDefinition { Height=new GridLength(h,GridUnitType.Star) };
+            if (double.IsNaN(h)) return new RowDefinition { Height=GridLength.Auto };
+            return new RowDefinition { Height=new GridLength(h) };
+        }
 
         void SetRow(UIElement e, int r, Grid g) { Grid.SetRow(e,r); g.Children.Add(e); }
 
-        Border MkBorder(Color bg, double h=0, Thickness pad=default) =>
-            new Border {
+        Border MkBorder(Color bg, double h=0, Thickness pad=new Thickness()) {
+            return new Border {
                 Background=Theme.Brush(bg),
                 Height=h>0?h:double.NaN,
-                Padding=pad==default?new Thickness(0):pad };
+                Padding=pad.Left==0&&pad.Right==0&&pad.Top==0&&pad.Bottom==0?new Thickness(0):pad };
+        }
 
-        TextBlock Txt(string t, double sz, Color fg, bool bold=false, double tracking=0) =>
-            new TextBlock {
+        TextBlock Txt(string t, double sz, Color fg, bool bold=false, double tracking=0) {
+            return new TextBlock {
                 Text=t, FontSize=sz, FontFamily=new FontFamily("Consolas"),
                 Foreground=Theme.Brush(fg),
                 FontWeight=bold?FontWeights.Bold:FontWeights.Normal,
                 LetterSpacing=tracking,
                 VerticalAlignment=VerticalAlignment.Center };
+        }
 
-        UIElement ActionLabel(string t) => new TextBlock {
-            Text=t.ToUpperInvariant(), FontSize=8, FontFamily=new FontFamily("Consolas"),
-            Foreground=Theme.Brush(Theme.TextDim),
-            LetterSpacing=1.5, Margin=new Thickness(4,2,0,6) };
+        UIElement ActionLabel(string t) {
+            return new TextBlock {
+                Text=t.ToUpperInvariant(), FontSize=8, FontFamily=new FontFamily("Consolas"),
+                Foreground=Theme.Brush(Theme.TextDim),
+, Margin=new Thickness(4,2,0,6) };
+        }
 
-        UIElement Spacer(double h) => new Border { Height=h };
+        UIElement Spacer(double h) { return new Border { Height=h }; }
 
         Border ActionBtn(string icon, string title, string sub, Color accent,
                           Action onClick, bool disabled=false, bool small=false)
