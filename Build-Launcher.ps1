@@ -48,13 +48,35 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Reflection;
+using System.Runtime.InteropServices;
 
 class Program {
+    // Disable Quick Edit Mode so clicking the console window does not pause the process
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr GetStdHandle(int nStdHandle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+    const int STD_INPUT_HANDLE    = -10;
+    const uint ENABLE_QUICK_EDIT   = 0x0040;
+    const uint ENABLE_EXTENDED_FLAGS = 0x0080;
+
+    static void DisableQuickEdit() {
+        IntPtr handle = GetStdHandle(STD_INPUT_HANDLE);
+        uint mode;
+        if (GetConsoleMode(handle, out mode)) {
+            mode &= ~ENABLE_QUICK_EDIT;   // clear Quick Edit
+            mode |= ENABLE_EXTENDED_FLAGS; // required for the above to take effect
+            SetConsoleMode(handle, mode);
+        }
+    }
     const string RawUrl  = "https://raw.githubusercontent.com/Phat-shot/scripts/main/Manage-NvidiaDriver.ps1";
     const string WorkDir = @"C:\Program Files\airgpu\Driver Manager";
     const string ScriptName = "Manage-NvidiaDriver.ps1";
 
     static int Main(string[] args) {
+        DisableQuickEdit();
         string scriptPath = Path.Combine(WorkDir, ScriptName);
 
         // Ensure working directory exists
