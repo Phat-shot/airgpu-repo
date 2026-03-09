@@ -654,47 +654,13 @@ function Step-ShowStatus {
 
 function Step-CheckOnline {
     param($info)
-    # Run both S3 fetches as parallel background jobs so spinner stays live
-    # Read credentials to pass explicitly into jobs (jobs are separate processes)
-    $jobCreds = @{ File=$AwsCredsFile }
-    $s3JobSb = {
-        param($bucket, $prefix, $credsFile)
-        Import-Module AWSPowerShell -ErrorAction SilentlyContinue
-        try {
-            if (Test-Path $credsFile) {
-                $kvp = @{}; Get-Content $credsFile | Where-Object { $_ -match "=" } | ForEach-Object {
-                    $p = $_ -split "\s*=\s*", 2; if ($p.Count -eq 2) { $kvp[$p[0].Trim()] = $p[1].Trim() }
-                }
-                if ($kvp["aws_access_key_id"]) { Set-AWSCredential -AccessKey $kvp["aws_access_key_id"] -SecretKey $kvp["aws_secret_access_key"] -ErrorAction SilentlyContinue }
-            }
-            Set-DefaultAWSRegion -Region "us-east-1" -ErrorAction SilentlyContinue
-            $exe = Get-S3Object -BucketName $bucket -KeyPrefix $prefix -Region "us-east-1" -ErrorAction Stop |
-                Where-Object { $_.Key -like "*.exe" } | Select-Object -First 1
-            if ($exe -and (Split-Path $exe.Key -Leaf) -match "(\d+\.\d+)") {
-                return @{ Version=$Matches[1]; S3Key=$exe.Key; S3Bucket=$bucket; Error=$false }
-            }
-            return @{ Version="Unknown"; S3Key=""; S3Bucket=$bucket; Error=$false }
-        } catch {
-            return @{ Version="Unknown"; S3Key=""; S3Bucket=$bucket; Error=$true }
-        }
-    }
-    $jobGaming = Start-Job -ScriptBlock $s3JobSb -ArgumentList "nvidia-gaming",          "windows/latest/", $AwsCredsFile
-    $jobGrid   = Start-Job -ScriptBlock $s3JobSb -ArgumentList "ec2-windows-nvidia-drivers", "latest/",     $AwsCredsFile
-    $spinCtx = Start-Spinner -Label "Checking for updates"
-    while ($jobGaming.State -eq "Running" -or $jobGrid.State -eq "Running") { Start-Sleep -Milliseconds 150 }
-    Stop-Spinner -ctx $spinCtx
-    $latestGaming = Receive-Job $jobGaming -ErrorAction SilentlyContinue
-    $latestGrid   = Receive-Job $jobGrid   -ErrorAction SilentlyContinue
-    Remove-Job $jobGaming, $jobGrid -ErrorAction SilentlyContinue
-    if (-not $latestGaming) { $latestGaming = @{ Version="Unknown"; S3Key=""; S3Bucket=""; Error=$true } }
-    if (-not $latestGrid)   { $latestGrid   = @{ Version="Unknown"; S3Key=""; S3Bucket=""; Error=$true } }
-    # Update session cache
-    $script:S3CacheGaming = $latestGaming
-    $script:S3CacheGrid   = $latestGrid
+    # S3 versions already fetched during load -- just read cache
+    $latestGaming = $script:S3CacheGaming
+    $latestGrid   = $script:S3CacheGrid
     $updateAvailable = $false; $updateVersion = ""
     try {
         $latest = if ($info.Variant -eq "GRID") { $latestGrid.Version } else { $latestGaming.Version }
-        if ($latest -ne "Unknown" -and [Version]$latest -gt [Version]$info.Version) {
+        if ($latest -and $latest -ne "Unknown" -and [Version]$latest -gt [Version]$info.Version) {
             $updateAvailable = $true; $updateVersion = $latest
         }
     } catch {}
@@ -739,16 +705,24 @@ function Step-ActionMenu {
 function Invoke-FullInstall {
     param([string]$TargetVariant, [string]$Version, [string]$S3Bucket = "", [string]$S3Key = "")
 
-    # Ensure AWS credentials loaded (may have been skipped on resume path)
-    if (-not $script:AwsCredentialsLoaded) {
-        $_awsCtx = Start-Spinner -Label "Loading"
-        $oldOut = [Console]::Out
-        [Console]::SetOut([System.IO.TextWriter]::Null)
-        try { Set-AwsCredentials } finally { [Console]::SetOut($oldOut) }
-        Stop-Spinner -ctx $_awsCtx
-    }
-
     $state = Load-State
+    # AWS only needed if we have to download (Step 1)
+    # On resume after reboot the installer is already cached -- skip AWS entirely
+    $needsDownload = $state.Step -notin @("AFTER_DOWNLOAD","AFTER_UNINSTALL_AND_CLEANUP")
+    $installerCached = $state.InstallerPath -and (Test-Path ([string]$state.InstallerPath))
+    if ($needsDownload -and -not $installerCached -and -not $script:AwsCredentialsLoaded) {
+        $jobGaming = Start-Job -ScriptBlock $s3JobSb -ArgumentList "nvidia-gaming",              "windows/latest/", $AwsCredsFile
+        $jobGrid   = Start-Job -ScriptBlock $s3JobSb -ArgumentList "ec2-windows-nvidia-drivers", "latest/",         $AwsCredsFile
+        $_awsCtx   = Start-Spinner -Label "Loading"
+        while ($jobGaming.State -eq "Running" -or $jobGrid.State -eq "Running") { Start-Sleep -Milliseconds 150 }
+        Stop-Spinner -ctx $_awsCtx
+        $script:S3CacheGaming = Receive-Job $jobGaming -ErrorAction SilentlyContinue
+        $script:S3CacheGrid   = Receive-Job $jobGrid   -ErrorAction SilentlyContinue
+        Remove-Job $jobGaming, $jobGrid -ErrorAction SilentlyContinue
+        if (-not $script:S3CacheGaming) { $script:S3CacheGaming = @{ Version="Unknown"; S3Key=""; S3Bucket="nvidia-gaming"; Error=$true } }
+        if (-not $script:S3CacheGrid)   { $script:S3CacheGrid   = @{ Version="Unknown"; S3Key=""; S3Bucket="ec2-windows-nvidia-drivers"; Error=$true } }
+        Set-AwsCredentials
+    }
     if (-not $state) { $state = @{} }
     # Merge caller args into state (caller may supply fresher S3 info)
     if ($TargetVariant) { $state.TargetVariant = $TargetVariant }
@@ -864,36 +838,42 @@ Show-Banner
 $existingState = Load-State
 $isResume = $existingState -and $existingState.Step -in @("AFTER_DOWNLOAD","AFTER_UNINSTALL_AND_CLEANUP","UNINSTALLING")
 
-# -- Load AWS: spinner on main thread, Set-AwsCredentials in background runspace --
+# -- Load AWS + prefetch S3 versions in parallel (3 background jobs) --------
 if (-not $isResume) {
-    $_awsDone = [System.Collections.Generic.List[bool]]::new(); $_awsDone.Add($false)
-    $_awsRs   = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
-    $_awsRs.Open()
-    $_awsRs.SessionStateProxy.SetVariable("awsDone",     $_awsDone)
-    $_awsRs.SessionStateProxy.SetVariable("AwsCredsFile", $AwsCredsFile)
-    $_awsPsh  = [System.Management.Automation.PowerShell]::Create()
-    $_awsPsh.Runspace = $_awsRs
-    $_awsPsh.AddScript({
+    $s3JobSb = {
+        param($bucket, $prefix, $credsFile)
+        Import-Module AWSPowerShell -ErrorAction SilentlyContinue
         try {
-            Import-Module AWSPowerShell -ErrorAction SilentlyContinue
-            if (Test-Path $AwsCredsFile) {
-                $ini = Get-Content $AwsCredsFile | Where-Object { $_ -match "^\s*\w" -and $_ -match "=" }
-                $kvp = @{}
-                $ini | ForEach-Object { $p = $_ -split "\s*=\s*", 2; if ($p.Count -eq 2) { $kvp[$p[0].Trim()] = $p[1].Trim() } }
-                $key = $kvp["aws_access_key_id"]; $secret = $kvp["aws_secret_access_key"]
-                if ($key -and $secret) { Set-AWSCredential -AccessKey $key -SecretKey $secret -ErrorAction SilentlyContinue }
+            if (Test-Path $credsFile) {
+                $kvp = @{}; Get-Content $credsFile | Where-Object { $_ -match "=" } | ForEach-Object {
+                    $p = $_ -split "\s*=\s*", 2; if ($p.Count -eq 2) { $kvp[$p[0].Trim()] = $p[1].Trim() }
+                }
+                if ($kvp["aws_access_key_id"]) {
+                    Set-AWSCredential -AccessKey $kvp["aws_access_key_id"] -SecretKey $kvp["aws_secret_access_key"] -ErrorAction SilentlyContinue
+                }
             }
             Set-DefaultAWSRegion -Region "us-east-1" -ErrorAction SilentlyContinue
-        } catch {}
-        $awsDone[0] = $true
-    }) | Out-Null
-    # Spinner on main thread -- AWS loads in background runspace
+            $exe = Get-S3Object -BucketName $bucket -KeyPrefix $prefix -Region "us-east-1" -ErrorAction Stop |
+                Where-Object { $_.Key -like "*.exe" } | Select-Object -First 1
+            if ($exe -and (Split-Path $exe.Key -Leaf) -match "(\d+\.\d+)") {
+                return @{ Version=$Matches[1]; S3Key=$exe.Key; S3Bucket=$bucket; Error=$false }
+            }
+            return @{ Version="Unknown"; S3Key=""; S3Bucket=$bucket; Error=$false }
+        } catch {
+            return @{ Version="Unknown"; S3Key=""; S3Bucket=$bucket; Error=$true }
+        }
+    }
+    $jobGaming = Start-Job -ScriptBlock $s3JobSb -ArgumentList "nvidia-gaming",              "windows/latest/", $AwsCredsFile
+    $jobGrid   = Start-Job -ScriptBlock $s3JobSb -ArgumentList "ec2-windows-nvidia-drivers", "latest/",         $AwsCredsFile
     $_loadCtx  = Start-Spinner -Label "Loading"
-    $_awsPsh.BeginInvoke() | Out-Null
-    while (-not $_awsDone[0]) { Start-Sleep -Milliseconds 100 }
-    $_awsPsh.Dispose(); $_awsRs.Close()
+    while ($jobGaming.State -eq "Running" -or $jobGrid.State -eq "Running") { Start-Sleep -Milliseconds 150 }
     Stop-Spinner -ctx $_loadCtx
-    # Now load credentials into the main session too (fast -- module already imported)
+    $script:S3CacheGaming = Receive-Job $jobGaming -ErrorAction SilentlyContinue
+    $script:S3CacheGrid   = Receive-Job $jobGrid   -ErrorAction SilentlyContinue
+    Remove-Job $jobGaming, $jobGrid -ErrorAction SilentlyContinue
+    if (-not $script:S3CacheGaming) { $script:S3CacheGaming = @{ Version="Unknown"; S3Key=""; S3Bucket="nvidia-gaming"; Error=$true } }
+    if (-not $script:S3CacheGrid)   { $script:S3CacheGrid   = @{ Version="Unknown"; S3Key=""; S3Bucket="ec2-windows-nvidia-drivers"; Error=$true } }
+    # Load credentials into main session (module already imported in jobs)
     Set-AwsCredentials
 }
 
