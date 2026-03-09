@@ -935,7 +935,7 @@ if (-not $isResume) {
         Write-Host "      Cause: missing credentials or IAM role lacks S3 read permission." -ForegroundColor DarkGray
         Write-Host "      File:  C:\Users\user\.aws\credentials" -ForegroundColor DarkGray
         Write-Host ""
-        Write-Log "S3 unreachable: both buckets failed -- no credentials or IAM role" -Level "WARN"
+        Write-Log "S3 unreachable: both buckets failed -- no credentials or IAM role configured" -Level "INFO"
     }
     # Load credentials into main session (module already imported in jobs)
     Set-AwsCredentials
