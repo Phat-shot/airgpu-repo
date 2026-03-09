@@ -76,7 +76,8 @@ function Stop-Spinner {
     $ctx.Psh.EndInvoke($ctx.Handle) | Out-Null
     $ctx.Psh.Dispose(); $ctx.Rs.Close()
     if ($Done) { Write-Host "`r  $Done                              " -ForegroundColor $Color }
-    else        { Write-Host "`r                                      " }
+    else        { Write-Host "`r                                      " -NoNewline
+                  Write-Host "" }
     [Console]::Out.Flush()
 }
 
@@ -481,6 +482,7 @@ function Get-DriverPackage {
         return $dest
     }
 
+    Write-Host "  Downloading $(Split-Path $S3Key -Leaf)" -ForegroundColor DarkGray
     $tmpDest = $dest + ".part"
     try {
         # Get file size for progress bar (background job so main thread stays free)
@@ -528,7 +530,7 @@ function Get-DriverPackage {
                 $bar   = $filled_c.ToString() * $fill + $empty_c.ToString() * ($width - $fill)
                 $curMB = [math]::Round($cur / 1MB, 0)
                 $totMB = [math]::Round($tot / 1MB, 0)
-                [Console]::Write("`r  $pct%  $bar  $curMB / $totMB MB   ")
+                [Console]::Write("`r  $pct%  $bar  $curMB / $totMB MB        ")
                 Start-Sleep -Milliseconds 300
             }
         }) | Out-Null
@@ -550,7 +552,9 @@ function Get-DriverPackage {
         if (Test-Path $tmpDest) { Move-Item $tmpDest $dest -Force }
         $sizeMB  = [math]::Round((Get-Item $dest).Length / 1MB, 0)
         $fullBar = ([char]0x2588).ToString() * 30
-        Write-Host "`r  100%  $fullBar  $sizeMB MB       " -ForegroundColor Green
+        $pad = " " * 20
+        Write-Host "`r  100%  $fullBar  $sizeMB MB  $pad" -ForegroundColor Green
+        Write-Host ""
         Write-Log "Downloaded: $(Split-Path $dest -Leaf) ($sizeMB MB)" -Level "OK"
         return $dest
     } catch {
@@ -732,6 +736,8 @@ function Invoke-FullInstall {
 
     # -- STEP 1: PRE-FLIGHT + DOWNLOAD ------------------------
     if ($state.Step -notin @("AFTER_DOWNLOAD","AFTER_UNINSTALL_AND_CLEANUP")) {
+        Write-Host ""
+        Write-Host "  Checking prerequisites..." -ForegroundColor DarkGray
         $disk = Get-PSDrive ((Split-Path $DownloadDir -Qualifier).TrimEnd(":")) -ErrorAction SilentlyContinue
         if ($disk -and $disk.Free -lt 2GB) {
             Write-Host "  ERROR: Not enough disk space ($([math]::Round($disk.Free/1GB,1)) GB free, need 2 GB)" -ForegroundColor Red
