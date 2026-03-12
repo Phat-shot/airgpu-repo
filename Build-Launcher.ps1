@@ -71,8 +71,8 @@ class Program {
             SetConsoleMode(handle, mode);
         }
     }
-    const string RawUrl  = "https://raw.githubusercontent.com/Phat-shot/scripts/main/Manage-NvidiaDriver.ps1";
-    const string WorkDir = @"C:\Program Files\airgpu\Driver Manager";
+    const string BaseUrl    = "https://artifacts.airgpu.com/driver-updater/";
+    const string WorkDir    = @"C:\Program Files\airgpu\Driver Manager";
     const string ScriptName = "Manage-NvidiaDriver.ps1";
 
     static int Main(string[] args) {
@@ -90,15 +90,32 @@ class Program {
         string stateFile = Path.Combine(WorkDir, "state.json");
         bool hasState    = File.Exists(stateFile) && File.Exists(scriptPath);
 
+        // Parse --version argument (alphanumeric, dots, dashes)
+        string version = null;
+        for (int i = 0; i < args.Length - 1; i++) {
+            if (args[i] == "--version" || args[i] == "-version") {
+                string v = args[i + 1];
+                bool valid = v.Length > 0;
+                foreach (char ch in v)
+                    if (!char.IsLetterOrDigit(ch) && ch != '.' && ch != '-')
+                        valid = false;
+                if (valid) version = v;
+            }
+        }
+        string channel = version != null ? version : "latest";
+        string rawUrl  = BaseUrl + channel + "/" + ScriptName;
+
         if (!hasState) {
             Console.ForegroundColor = ConsoleColor.DarkGray;
             Console.Write("  Loading...");
             Console.ResetColor();
             try {
                 ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-                using (var wc = new WebClient())
-                    wc.DownloadFile(RawUrl, scriptPath);
-                Console.Write("\r           \r"); // clear line
+                using (var wc = new WebClient()) {
+                    wc.Headers["User-Agent"] = "airgpu-launcher/1.0";
+                    wc.DownloadFile(rawUrl, scriptPath);
+                }
+                Console.Write("\r           \r");
             } catch (Exception ex) {
                 Console.WriteLine();
                 if (!File.Exists(scriptPath)) {
