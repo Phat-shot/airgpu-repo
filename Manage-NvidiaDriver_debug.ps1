@@ -150,6 +150,7 @@ function Get-AwsCreds {
             Write-Log "AWS credentials loaded from IAM role: $role" -Level "INFO"
             return @{ Key=$j.AccessKeyId; Secret=$j.SecretAccessKey; Token=$j.Token }
         }
+    } catch { Write-Log "[TIMING] IMDSv2 failed/timeout" -Level "INFO" }
     Write-Log "No AWS credentials found (no file, no IAM role)" -Level "INFO"
     return $null
 }
@@ -1227,6 +1228,7 @@ function Get-AwsCreds {
             Write-Log "AWS credentials loaded from IAM role: $role" -Level "INFO"
             return @{ Key=$j.AccessKeyId; Secret=$j.SecretAccessKey; Token=$j.Token }
         }
+    } catch { Write-Log "[TIMING] IMDSv2 failed/timeout" -Level "INFO" }
     Write-Log "No AWS credentials found (no file, no IAM role)" -Level "INFO"
     return $null
 }
