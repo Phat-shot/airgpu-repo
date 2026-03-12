@@ -174,7 +174,8 @@ function Get-SigV4Headers {
 function Get-S3DriverInfo {
     param([string]$Bucket, [string]$Prefix, $Creds)
     try {
-        $query   = "list-type=2&prefix=$([Uri]::EscapeDataString($Prefix))&max-keys=20"
+        $amp = [char]38
+        $query   = "list-type=2" + $amp + "prefix=$([Uri]::EscapeDataString($Prefix))" + $amp + "max-keys=20"
         $url     = "https://$Bucket.s3.amazonaws.com/?$query"
         $headers = @{}
         if ($Creds) {
@@ -263,7 +264,7 @@ function Register-ScriptDeletion {
     param([string]$Path)
     $escaped = $Path.Replace('"', '\"')
     Start-Process -FilePath "cmd.exe" `
-        -ArgumentList "/c ping -n 3 127.0.0.1 > nul & del /f /q `"$escaped`"" `
+        -ArgumentList ('/c', ("ping -n 3 127.0.0.1 > nul " + [char]38 + " del /f /q `"" + $escaped + "`"")) `
         -WindowStyle Hidden -ErrorAction SilentlyContinue
     Write-Log "Script queued for deletion: $Path" -Level "INFO"
 }
@@ -384,13 +385,17 @@ function Invoke-NvidiaUninstall {
         Write-Log "Uninstalling: $($app.DisplayName)" -Level "INFO"
         try {
             if ($app.UninstallString -match 'MsiExec') {
-                $guid = [regex]::Match($app.UninstallString, "\{[^}]+\}").Value
+                $guidPat = [char]123 + [char]91 + [char]94 + [char]125 + [char]93 + [char]43 + [char]125
+                $guidMatch = [regex]::Match($app.UninstallString, $guidPat)
+                $guid = $guidMatch.Value
                 if ($guid) {
                     $proc = Start-Process msiexec.exe -ArgumentList "/x $guid /quiet /norestart" -PassThru -NoNewWindow
                     if ($proc) { while (-not $proc.HasExited) { Start-Sleep -Milliseconds 500 } }
                 }
             } elseif ($app.UninstallString -match '\.exe') {
-                $exe = [regex]::Match($app.UninstallString, "[^`"]+\.exe").Value
+                $exePat = [char]91 + [char]94 + [char]34 + [char]93 + [char]43 + '\.exe'
+                $exeMatch = [regex]::Match($app.UninstallString, $exePat)
+                $exe = $exeMatch.Value
                 if ($exe -and (Test-Path $exe)) {
                     $proc = Start-Process $exe -ArgumentList '-s -noreboot' -PassThru -NoNewWindow
                     if ($proc) { while (-not $proc.HasExited) { Start-Sleep -Milliseconds 500 } }
@@ -442,7 +447,8 @@ function Get-DriverPackage {
     $tmpDest = $Dest + '.part'
     try {
         # Get file size
-        $sizeQuery  = "list-type=2&prefix=$([Uri]::EscapeDataString($S3Key))&max-keys=1"
+        $amp2 = [char]38
+        $sizeQuery  = "list-type=2" + $amp2 + "prefix=$([Uri]::EscapeDataString($S3Key))" + $amp2 + "max-keys=1"
         $sizeUrl    = "https://$S3Bucket.s3.amazonaws.com/?$sizeQuery"
         $sizeHdrs   = @{}
         if ($script:AwsCreds) {
@@ -533,14 +539,15 @@ function Install-NvidiaControlPanel {
                       ' --silent --disable-interactivity'
             $wgLog  = "$env:TEMP\winget_cp_$([System.IO.Path]::GetRandomFileName()).log"
             $proc   = Start-Process -FilePath 'cmd.exe' `
-                          -ArgumentList @('/c', "winget $wgArgs > `"$wgLog`" 2>&1") `
+                          -ArgumentList @('/c', ("winget " + $wgArgs + " > `"" + $wgLog + "`" 2>" + [char]38 + "1")) `
                           -PassThru -WindowStyle Hidden -Wait
             $ok = ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq -1978335189)
             Write-Log "winget NVIDIA Control Panel: ExitCode $($proc.ExitCode)" -Level "INFO"
             Remove-Item $wgLog -ErrorAction SilentlyContinue
         }
         if (-not $ok -and -not $wgCmd) {
-            $uri   = "https://store.rg-adguard.net/api/GetFiles?type=PackageFamilyName&url=NVIDIACorp.NVIDIAControlPanel_56jybvy8sckqj&ring=Retail&lang=en-US"
+            $amp3 = [char]38
+            $uri   = "https://store.rg-adguard.net/api/GetFiles?type=PackageFamilyName" + $amp3 + "url=NVIDIACorp.NVIDIAControlPanel_56jybvy8sckqj" + $amp3 + "ring=Retail" + $amp3 + "lang=en-US"
             $links = (Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 30 -ErrorAction SilentlyContinue).Links |
                      Where-Object { $_.href -match '\.msixbundle|\.appxbundle' -and $_.href -notmatch 'blockmap' } |
                      Select-Object -First 1
@@ -849,8 +856,8 @@ if ($DebugS3) {
     # Also test unsigned (public access)
     Write-Host "  Testing unsigned (public) access..." -ForegroundColor Yellow
     foreach ($url in @(
-        "https://ec2-windows-nvidia-drivers.s3.amazonaws.com/?list-type=2&prefix=latest/&max-keys=5",
-        "https://nvidia-gaming.s3.amazonaws.com/?list-type=2&prefix=windows/latest/&max-keys=5"
+        ("https://ec2-windows-nvidia-drivers.s3.amazonaws.com/?list-type=2" + [char]38 + "prefix=latest/" + [char]38 + "max-keys=5"),
+        ("https://nvidia-gaming.s3.amazonaws.com/?list-type=2" + [char]38 + "prefix=windows/latest/" + [char]38 + "max-keys=5")
     )) {
         Write-Host "  GET $($url.Substring(0,60))..." -NoNewline
         try {
@@ -897,7 +904,8 @@ if (-not $isResume) {
             $amzDate = $now.ToString('yyyyMMddTHHmmssZ')
             $date    = $now.ToString('yyyyMMdd')
             $bHash   = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
-            $query   = "list-type=2&prefix=$([Uri]::EscapeDataString($prefix))&max-keys=20"
+            $ampD = [char]38
+        $query   = "list-type=2" + $ampD + "prefix=$([Uri]::EscapeDataString($prefix))" + $ampD + "max-keys=20"
             $url     = "https://$bucket.s3.amazonaws.com/?$query"
 
             $hdrs = @{}
