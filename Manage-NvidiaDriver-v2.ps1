@@ -50,17 +50,17 @@ function Write-Log {
 function Start-Spinner {
     param([string]$Label = "Loading")
     $ctx = @{ Stop = $false; Thread = $null }
-    $sb  = [scriptblock]::Create(@"
-        param(`$lbl, `$ctxRef)
-        `$frames = [char]0x28F7,[char]0x28EF,[char]0x28DF,[char]0x287F,[char]0x28BF,[char]0x28FB,[char]0x28FD,[char]0x28FE
-        `$i = 0
-        while (-not `$ctxRef.Stop) {
-            [Console]::Write("`r  " + `$frames[`$i % `$frames.Count] + " `$lbl...")
-            `$i++
+    $sb  = {
+        param($lbl, $ctxRef)
+        $frames = [char]0x28F7,[char]0x28EF,[char]0x28DF,[char]0x287F,[char]0x28BF,[char]0x28FB,[char]0x28FD,[char]0x28FE
+        $i = 0
+        while (-not $ctxRef.Stop) {
+            [Console]::Write("`r  " + $frames[$i % $frames.Count] + " $lbl...")
+            $i++
             Start-Sleep -Milliseconds 80
         }
-        [Console]::Write("`r" + (" " * (`$lbl.Length + 10)) + "`r")
-"@)
+        [Console]::Write("`r" + (" " * ($lbl.Length + 10)) + "`r")
+    }
     $rs  = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
     $rs.Open()
     $psh = [System.Management.Automation.PowerShell]::Create()
@@ -476,21 +476,21 @@ function Get-DriverPackage {
 
         # Progress runspace
         $pbCtx = @{ Done=$false; Downloaded=0; Total=$total }
-        $pbSb  = [scriptblock]::Create(@"
-            param(`$ctx, `$fname)
-            while (-not `$ctx.Done) {
-                if (`$ctx.Total -gt 0) {
-                    `$pct  = [int]((`$ctx.Downloaded / `$ctx.Total) * 100)
-                    `$done = [int]((`$ctx.Downloaded / `$ctx.Total) * 30)
-                    `$bar  = ([string][char]0x2588 * `$done).PadRight(30)
-                    [Console]::Write("`r  [" + `$bar + "] " + `$pct + "% " + `$fname)
+        $pbSb  = {
+            param($ctx, $fname)
+            while (-not $ctx.Done) {
+                if ($ctx.Total -gt 0) {
+                    $pct  = [int](($ctx.Downloaded / $ctx.Total) * 100)
+                    $done = [int](($ctx.Downloaded / $ctx.Total) * 30)
+                    $bar  = ([string][char]0x2588 * $done).PadRight(30)
+                    [Console]::Write("`r  [" + $bar + "] " + $pct + "% " + $fname)
                 } else {
-                    [Console]::Write("`r  Downloading " + `$fname + " (" + [int](`$ctx.Downloaded/1MB) + " MB)...")
+                    [Console]::Write("`r  Downloading " + $fname + " (" + [int]($ctx.Downloaded/1MB) + " MB)...")
                 }
                 Start-Sleep -Milliseconds 200
             }
             [Console]::Write("`r" + (" " * 70) + "`r")
-"@)
+        }
         $pbRs  = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
         $pbRs.Open()
         $pbPsh = [System.Management.Automation.PowerShell]::Create()
