@@ -5,7 +5,7 @@
     Icon is looked up relative to this script's directory.
 #>
 param(
-    [string]$OutDir   = "$PSScriptRoot\build",
+    [string]$OutDir   = "$PSScriptRoot",
     [string]$IconPath = "$PSScriptRoot\airgpu.ico"
 )
 
