@@ -384,13 +384,13 @@ function Invoke-NvidiaUninstall {
         Write-Log "Uninstalling: $($app.DisplayName)" -Level "INFO"
         try {
             if ($app.UninstallString -match 'MsiExec') {
-                $guid = [regex]::Match($app.UninstallString, '\{[^}]+\}').Value
+                $guid = [regex]::Match($app.UninstallString, "\{[^}]+\}").Value
                 if ($guid) {
                     $proc = Start-Process msiexec.exe -ArgumentList "/x $guid /quiet /norestart" -PassThru -NoNewWindow
                     if ($proc) { while (-not $proc.HasExited) { Start-Sleep -Milliseconds 500 } }
                 }
             } elseif ($app.UninstallString -match '\.exe') {
-                $exe = [regex]::Match($app.UninstallString, '"?([^"]+\.exe)"?').Groups[1].Value
+                $exe = [regex]::Match($app.UninstallString, "[^`"]+\.exe").Value
                 if ($exe -and (Test-Path $exe)) {
                     $proc = Start-Process $exe -ArgumentList '-s -noreboot' -PassThru -NoNewWindow
                     if ($proc) { while (-not $proc.HasExited) { Start-Sleep -Milliseconds 500 } }
@@ -540,7 +540,7 @@ function Install-NvidiaControlPanel {
             Remove-Item $wgLog -ErrorAction SilentlyContinue
         }
         if (-not $ok -and -not $wgCmd) {
-            $uri   = 'https://store.rg-adguard.net/api/GetFiles?type=PackageFamilyName&url=NVIDIACorp.NVIDIAControlPanel_56jybvy8sckqj&ring=Retail&lang=en-US'
+            $uri   = "https://store.rg-adguard.net/api/GetFiles?type=PackageFamilyName&url=NVIDIACorp.NVIDIAControlPanel_56jybvy8sckqj&ring=Retail&lang=en-US"
             $links = (Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 30 -ErrorAction SilentlyContinue).Links |
                      Where-Object { $_.href -match '\.msixbundle|\.appxbundle' -and $_.href -notmatch 'blockmap' } |
                      Select-Object -First 1
@@ -849,8 +849,8 @@ if ($DebugS3) {
     # Also test unsigned (public access)
     Write-Host "  Testing unsigned (public) access..." -ForegroundColor Yellow
     foreach ($url in @(
-        'https://ec2-windows-nvidia-drivers.s3.amazonaws.com/?list-type=2&prefix=latest/&max-keys=5',
-        'https://nvidia-gaming.s3.amazonaws.com/?list-type=2&prefix=windows/latest/&max-keys=5'
+        "https://ec2-windows-nvidia-drivers.s3.amazonaws.com/?list-type=2&prefix=latest/&max-keys=5",
+        "https://nvidia-gaming.s3.amazonaws.com/?list-type=2&prefix=windows/latest/&max-keys=5"
     )) {
         Write-Host "  GET $($url.Substring(0,60))..." -NoNewline
         try {
