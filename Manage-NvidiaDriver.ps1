@@ -123,6 +123,19 @@ $script:AwsSessionToken    = $null
 $script:AwsRegion          = "us-east-1"
 $script:AwsCredentialsLoaded = $false
 
+function Test-TcpPort {
+    <# Quick TCP reachability check. Returns $true if port is open within $TimeoutMs.
+       Uses async TcpClient.BeginConnect -- immune to the Windows 21s SYN retry. #>
+    param([string]$Host_, [int]$Port = 80, [int]$TimeoutMs = 1000)
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $ar  = $tcp.BeginConnect($Host_, $Port, $null, $null)
+        $ok  = $ar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+        if ($ok -and $tcp.Connected) { $tcp.Close(); return $true }
+        $tcp.Close(); return $false
+    } catch { return $false }
+}
+
 function Initialize-AwsCredentials {
     if ($script:AwsCredentialsLoaded) { return ($null -ne $script:AwsAccessKey) }
 
@@ -152,18 +165,29 @@ function Initialize-AwsCredentials {
         }
     }
 
-    # --- Source 2: EC2 Instance Metadata Service (IMDSv2 first, then v1) ---
-    $imdsBase = "http://169.254.169.254/latest"
+    # --- Source 2: EC2 Instance Metadata Service ---
+    # Pre-check: TCP connect to 169.254.169.254 with 1s hard timeout.
+    # Invoke-RestMethod -TimeoutSec does NOT control the TCP SYN timeout on
+    # Windows (PS 5.1), which defaults to ~21s per attempt.  Without this
+    # gate the script would hang 40-80s on non-EC2 machines.
+    $imdsIp   = "169.254.169.254"
+    $imdsBase = "http://$imdsIp/latest"
+    if (-not (Test-TcpPort -Host_ $imdsIp -Port 80 -TimeoutMs 1000)) {
+        Write-Log "IMDS not reachable (TCP pre-check failed) -- skipping" -Level "INFO"
+        $script:AwsCredentialsLoaded = $true
+        return $false
+    }
+
     # IMDSv2
     try {
         $token = Invoke-RestMethod -Uri "$imdsBase/api/token" -Method PUT `
             -Headers @{ "X-aws-ec2-metadata-token-ttl-seconds" = "300" } `
-            -TimeoutSec 2 -ErrorAction Stop
+            -TimeoutSec 3 -ErrorAction Stop
         $mdH = @{ "X-aws-ec2-metadata-token" = $token }
         $role = (Invoke-RestMethod -Uri "$imdsBase/meta-data/iam/security-credentials/" `
-            -Headers $mdH -TimeoutSec 2 -ErrorAction Stop) -split "`n" | Select-Object -First 1
+            -Headers $mdH -TimeoutSec 3 -ErrorAction Stop) -split "`n" | Select-Object -First 1
         $creds = Invoke-RestMethod -Uri "$imdsBase/meta-data/iam/security-credentials/$($role.Trim())" `
-            -Headers $mdH -TimeoutSec 2 -ErrorAction Stop
+            -Headers $mdH -TimeoutSec 3 -ErrorAction Stop
         $script:AwsAccessKey    = $creds.AccessKeyId
         $script:AwsSecretKey    = $creds.SecretAccessKey
         $script:AwsSessionToken = $creds.Token
@@ -174,9 +198,9 @@ function Initialize-AwsCredentials {
     # IMDSv1 fallback
     try {
         $role = (Invoke-RestMethod -Uri "$imdsBase/meta-data/iam/security-credentials/" `
-            -TimeoutSec 2 -ErrorAction Stop) -split "`n" | Select-Object -First 1
+            -TimeoutSec 3 -ErrorAction Stop) -split "`n" | Select-Object -First 1
         $creds = Invoke-RestMethod -Uri "$imdsBase/meta-data/iam/security-credentials/$($role.Trim())" `
-            -TimeoutSec 2 -ErrorAction Stop
+            -TimeoutSec 3 -ErrorAction Stop
         $script:AwsAccessKey    = $creds.AccessKeyId
         $script:AwsSecretKey    = $creds.SecretAccessKey
         $script:AwsSessionToken = $creds.Token
@@ -1100,6 +1124,7 @@ foreach ($dir in @($WorkDir,$DownloadDir)) {
 }
 
 Show-Banner
+[Console]::Out.Flush()
 
 # -- Check for saved state (before loading AWS -- resume may not need S3) ----
 $existingState = Load-State
